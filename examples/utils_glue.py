@@ -24,7 +24,7 @@ import sys
 from io import open
 
 from scipy.stats import pearsonr, spearmanr
-from sklearn.metrics import matthews_corrcoef, f1_score
+from sklearn.metrics import matthews_corrcoef, f1_score, confusion_matrix
 
 logger = logging.getLogger(__name__)
 
@@ -553,30 +553,35 @@ def pearson_and_spearman(preds, labels):
     }
 
 
-def compute_metrics(task_name, preds, labels):
+def compute_metrics(task_name, preds, labels, additional_metrics=[]):
     assert len(preds) == len(labels)
     if task_name == "cola":
-        return {"mcc": matthews_corrcoef(labels, preds)}
+        results = {"mcc": matthews_corrcoef(labels, preds)}
     elif task_name == "sst-2":
-        return {"acc": simple_accuracy(preds, labels)}
+        results = {"acc": simple_accuracy(preds, labels)}
     elif task_name == "mrpc":
-        return acc_and_f1(preds, labels)
+        results = acc_and_f1(preds, labels)
     elif task_name == "sts-b":
-        return pearson_and_spearman(preds, labels)
+        results = pearson_and_spearman(preds, labels)
     elif task_name == "qqp":
-        return acc_and_f1(preds, labels)
+        results = acc_and_f1(preds, labels)
     elif task_name == "mnli":
-        return {"acc": simple_accuracy(preds, labels)}
+        results = {"acc": simple_accuracy(preds, labels)}
     elif task_name == "mnli-mm":
-        return {"acc": simple_accuracy(preds, labels)}
+        results = {"acc": simple_accuracy(preds, labels)}
     elif task_name == "qnli":
-        return {"acc": simple_accuracy(preds, labels)}
+        results = {"acc": simple_accuracy(preds, labels)}
     elif task_name == "rte":
-        return {"acc": simple_accuracy(preds, labels)}
+        results = {"acc": simple_accuracy(preds, labels)}
     elif task_name == "wnli":
-        return {"acc": simple_accuracy(preds, labels)}
+        results = {"acc": simple_accuracy(preds, labels)}
     else:
         raise KeyError(task_name)
+
+    if "conf_mtrx" in additional_metrics:
+        results["conf_mtrx"] = confusion_matrix(y_true=labels, y_pred=preds)
+
+    return results
 
 processors = {
     "cola": ColaProcessor,
