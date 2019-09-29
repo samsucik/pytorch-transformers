@@ -22,7 +22,7 @@ from collections import Counter
 import numpy as np
 import torch
 
-from utils import logger
+from examples.distillation.utils import logger
 
 class Dataset:
     def __init__(self,

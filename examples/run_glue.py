@@ -158,6 +158,7 @@ def train(args, train_dataset, model, tokenizer):
                     if args.local_rank == -1 and args.evaluate_during_training:  # Only evaluate when single GPU otherwise metrics may not average well
                         results = evaluate(args, model, tokenizer)
                         for key, value in results.items():
+                            if key == "conf_mtrx": continue
                             tb_writer.add_scalar('eval_{}'.format(key), value, global_step)
                     tb_writer.add_scalar('lr', scheduler.get_lr()[0], global_step)
                     tb_writer.add_scalar('loss', (tr_loss - logging_loss)/args.logging_steps, global_step)
@@ -301,7 +302,7 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False, get_raw_examp
             logger.info("Saving features into cached file %s", cached_features_file)
             torch.save(features, cached_features_file)
 
-    if args.local_rank == 0 and not evaluate:
+    if args.local_rank == 0 and not evaluate and torch.distributed.is_initialized():
         torch.distributed.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
 
     # Convert to Tensors and build dataset
@@ -474,7 +475,9 @@ def main():
 
 
     # Saving best-practices: if you use defaults names for the model, you can reload it using from_pretrained()
+    print("saving?")
     if args.do_train and (args.local_rank == -1 or torch.distributed.get_rank() == 0):
+        print("saving!")
         # Create output directory if needed
         if not os.path.exists(args.output_dir) and args.local_rank in [-1, 0]:
             os.makedirs(args.output_dir)

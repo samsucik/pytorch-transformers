@@ -31,8 +31,8 @@ from torch.optim import AdamW
 
 from pytorch_transformers import WarmupLinearSchedule
 
-from utils import logger
-from dataset import Dataset
+from examples.distillation.utils import logger
+from examples.distillation.dataset import Dataset
 
 class Distiller:
     def __init__(self,
