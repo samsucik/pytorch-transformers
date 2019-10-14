@@ -32,7 +32,7 @@ from distillation.distiller_from_finetuned import Distiller
 from distillation.utils import git_log, logger, init_gpu_params, set_seed
 from distillation.dataset import Dataset
 
-from utils_glue import processors
+from utils_glue import processors, output_modes
 from run_glue import load_and_cache_examples
 
 
@@ -42,14 +42,14 @@ def main():
     ## Required parameters
     parser.add_argument("--data_dir", default=None, type=str, required=True,
                         help="The input data dir. Should contain the .tsv files (or other data files) for the task.")
-    parser.add_argument("--dump_path", type=str, required=True,
+    parser.add_argument("--output_dir", type=str, required=True,
                         help="The output directory (log, checkpoints, parameters, etc.)")
     # parser.add_argument("--data_file", type=str, required=True,
     #                     help="The binarized file (tokenized + tokens_to_ids) and grouped by sequence.")
     # parser.add_argument("--token_counts", type=str, required=True,
     #                     help="The token counts in the data_file for MLM.")
     parser.add_argument("--force", action='store_true',
-                        help="Overwrite dump_path if it already exists.")
+                        help="Overwrite output_dir if it already exists.")
     parser.add_argument("--task_name", default=None, type=str, required=True,
                         help="The name of the task to train selected in the list: " + ", ".join(processors.keys()))
     parser.add_argument("--do_lower_case", action='store_true',
@@ -89,7 +89,7 @@ def main():
 
     parser.add_argument("--temperature", default=2., type=float,
                         help="Temperature for the softmax temperature.")
-    parser.add_argument("--alpha_ce", default=0.5, type=float,
+    parser.add_argument("--alpha_ce", default=1.0, type=float,
                         help="Linear weight for the distillation loss. Must be >=0.")
     # parser.add_argument("--alpha_mlm", default=0.5, type=float,
     #                     help="Linear weight for the MLM loss. Must be >=0.")
@@ -114,6 +114,8 @@ def main():
                         help="Number of pass on the whole dataset.")
     parser.add_argument("--batch_size", type=int, default=5,
                         help="Batch size (for each process).")
+    parser.add_argument("--per_gpu_eval_batch_size", default=8, type=int,
+                        help="Batch size per GPU/CPU for evaluation.")
     # parser.add_argument("--tokens_per_batch", type=int, default=-1,
     #                     help="If specified, modify the batches so that they have approximately this number of tokens.")
     # parser.add_argument("--shuffle", action='store_false',
@@ -152,10 +154,17 @@ def main():
 
     parser.add_argument("--log_interval", type=int, default=10,
                         help="Tensorboard logging interval.")
+    parser.add_argument('--log_examples', action='store_false',
+                        help="Show input examples on the command line during evaluation. Enabled by default.")
+    parser.add_argument("--evaluate_during_training", action='store_true',
+                        help="Rul evaluation during training at each logging step.")
     parser.add_argument("--checkpoint_interval", type=int, default=100,
                         help="Checkpoint interval.")
     parser.add_argument("--no_cuda", action='store_true',
                         help="Avoid using CUDA when available")
+    parser.add_argument("--toy_mode", action='store_true', help="Toy mode for development.")
+    parser.add_argument("--rich_eval", action='store_true', help="Rich evaluation (more metrics + mistake reporting).")
+
     args = parser.parse_args()
 
 
@@ -163,35 +172,36 @@ def main():
     init_gpu_params(args)
     set_seed(args)
     if args.is_master:
-        print("master!")
-        if os.path.exists(args.dump_path):
-            print("dump path exists!")
+        if os.path.exists(args.output_dir):
             if not args.force:
-                raise ValueError(f'Serialization dir {args.dump_path} already exists, but you have not precised wheter to overwrite it'
+                raise ValueError(f'Serialization dir {args.output_dir} already exists, but you have not precised wheter to overwrite it'
                                    'Use `--force` if you want to overwrite it')
             else:
-                print("deleting!")
-                shutil.rmtree(args.dump_path)
+                shutil.rmtree(args.output_dir)
 
-        if not os.path.exists(args.dump_path):
-            print("creating!")
-            os.makedirs(args.dump_path)
-        logger.info(f'Experiment will be dumped and logged in {args.dump_path}')
+        if not os.path.exists(args.output_dir):
+            os.makedirs(args.output_dir)
+        logger.info(f'Experiment will be dumped and logged in {args.output_dir}')
 
 
         ### SAVE PARAMS ###
         logger.info(f'Param: {args}')
-        with open(os.path.join(args.dump_path, 'parameters.json'), 'w') as f:
+        with open(os.path.join(args.output_dir, 'parameters.json'), 'w') as f:
             json.dump(vars(args), f, indent=4)
-        git_log(args.dump_path)
+        git_log(args.output_dir)
 
     # Setup CUDA, GPU & distributed training
     if args.local_rank == -1 or args.no_cuda:
         device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
         args.n_gpu = torch.cuda.device_count()
+        args.local_rank = -1
     else:  # Initializes the distributed backend which will take care of sychronizing nodes/GPUs
         device = torch.device("cuda", args.local_rank)
     args.device = device
+
+    logger.info("DEVICE: {}".format(args.device))
+    logger.info("N_GPU: {}".format(args.n_gpu))
+    exit(0)
 
     ### TOKENIZER ###
     # if args.teacher_type == 'bert':
@@ -212,6 +222,7 @@ def main():
     args.model_name_or_path = args.teacher_name
     args.max_seq_length = args.max_position_embeddings
     args.model_type = "bert"
+    args.output_mode = output_modes[args.task_name]
     train_dataset = load_and_cache_examples(args, args.task_name, tokenizer, evaluate=False)
 
     ## DATA LOADER ##
@@ -280,7 +291,8 @@ def main():
                           dataloader=train_dataloader,
                           # token_probs=token_probs,
                           student=student,
-                          teacher=teacher)
+                          teacher=teacher,
+                          tokenizer=tokenizer)
     distiller.train()
     logger.info("Let's go get some drinks.")
 

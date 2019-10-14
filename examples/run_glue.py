@@ -22,6 +22,8 @@ import glob
 import logging
 import os
 import random
+import socket
+from datetime import datetime
 
 import numpy as np
 import torch
@@ -69,7 +71,9 @@ def set_seed(args):
 def train(args, train_dataset, model, tokenizer):
     """ Train the model """
     if args.local_rank in [-1, 0]:
-        tb_writer = SummaryWriter()
+        current_time = datetime.now().strftime('%b%d_%H-%M-%S')
+        logdir = os.path.join(args.output_dir, "tensorboard", current_time + '_' + socket.gethostname())
+        tb_writer = SummaryWriter(logdir=logdir)
 
     args.train_batch_size = args.per_gpu_train_batch_size * max(1, args.n_gpu)
     train_sampler = RandomSampler(train_dataset) if args.local_rank == -1 else DistributedSampler(train_dataset)
@@ -121,7 +125,7 @@ def train(args, train_dataset, model, tokenizer):
     model.zero_grad()
     train_iterator = trange(int(args.num_train_epochs), desc="Epoch", disable=args.local_rank not in [-1, 0])
     set_seed(args)  # Added here for reproductibility (even between python 2 and 3)
-    for _ in train_iterator:
+    for epoch_number in train_iterator:
         epoch_iterator = tqdm(train_dataloader, desc="Iteration", disable=args.local_rank not in [-1, 0])
         for step, batch in enumerate(epoch_iterator):
             model.train()
@@ -156,7 +160,7 @@ def train(args, train_dataset, model, tokenizer):
                 if args.local_rank in [-1, 0] and args.logging_steps > 0 and global_step % args.logging_steps == 0:
                     # Log metrics
                     if args.local_rank == -1 and args.evaluate_during_training:  # Only evaluate when single GPU otherwise metrics may not average well
-                        results = evaluate(args, model, tokenizer)
+                        results = evaluate(args, model, tokenizer, prefix="e{}s{}".format(epoch_number, step))
                         for key, value in results.items():
                             if key == "conf_mtrx": continue
                             tb_writer.add_scalar('eval_{}'.format(key), value, global_step)
@@ -248,7 +252,7 @@ def evaluate(args, model, tokenizer, prefix=""):
             additional_metrics=(["conf_mtrx"] if args.rich_eval else []))
         results.update(result)
 
-        output_eval_file = os.path.join(eval_output_dir, "eval_results.txt")
+        output_eval_file = os.path.join(eval_output_dir, "eval_results{}.txt".format("" if prefix == "" else ("-")+prefix))
         with open(output_eval_file, "w") as writer:
             logger.info("***** Eval results {} *****".format(prefix))
             for key in sorted(result.keys()):
@@ -256,7 +260,7 @@ def evaluate(args, model, tokenizer, prefix=""):
                 writer.write("%s = %s\n" % (key, str(result[key])))
         
         if args.rich_eval:
-            output_eval_file = os.path.join(eval_output_dir, "classified_examples.tsv")
+            output_eval_file = os.path.join(eval_output_dir, "classified_examples{}.tsv".format("" if prefix == "" else ("-")+prefix))
             with open(output_eval_file, "w") as writer:
                 examples = list(zip(preds, examples[:len(preds)]))
                 examples = sorted(examples, key=lambda e: (int(e[1].label) == int(e[0]), int(e[1].label)))
@@ -297,6 +301,7 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False, get_raw_examp
             pad_on_left=bool(args.model_type in ['xlnet']),                 # pad on the left for xlnet
             pad_token=tokenizer.convert_tokens_to_ids([tokenizer.pad_token])[0],
             pad_token_segment_id=4 if args.model_type in ['xlnet'] else 0,
+            show_examples=args.log_examples
         )
         if args.local_rank in [-1, 0]:
             logger.info("Saving features into cached file %s", cached_features_file)
@@ -379,6 +384,8 @@ def main():
 
     parser.add_argument('--logging_steps', type=int, default=50,
                         help="Log every X updates steps.")
+    parser.add_argument('--log_examples', action='store_false',
+                        help="Show input examples on the command line. Enabled by default.")
     parser.add_argument('--save_steps', type=int, default=50,
                         help="Save checkpoint every X updates steps.")
     parser.add_argument("--eval_all_checkpoints", action='store_true',
@@ -405,8 +412,8 @@ def main():
     parser.add_argument("--toy_mode", action='store_true', help="Toy mode for development.")
     parser.add_argument("--rich_eval", action='store_true', help="Rich evaluation (more metrics + mistake reporting).")
     args = parser.parse_args()
-    if args.toy_mode:
-        args.max_steps = 1
+    # if args.toy_mode:
+    #     args.max_steps = 1
 
     if os.path.exists(args.output_dir) and os.listdir(args.output_dir) and args.do_train and not args.overwrite_output_dir:
         raise ValueError("Output directory ({}) already exists and is not empty. Use --overwrite_output_dir to overcome.".format(args.output_dir))
@@ -475,9 +482,7 @@ def main():
 
 
     # Saving best-practices: if you use defaults names for the model, you can reload it using from_pretrained()
-    print("saving?")
     if args.do_train and (args.local_rank == -1 or torch.distributed.get_rank() == 0):
-        print("saving!")
         # Create output directory if needed
         if not os.path.exists(args.output_dir) and args.local_rank in [-1, 0]:
             os.makedirs(args.output_dir)

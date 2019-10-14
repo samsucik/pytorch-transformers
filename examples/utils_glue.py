@@ -400,7 +400,8 @@ def convert_examples_to_features(examples, label_list, max_seq_length,
                                  pad_token_segment_id=0,
                                  sequence_a_segment_id=0, 
                                  sequence_b_segment_id=1,
-                                 mask_padding_with_zero=True):
+                                 mask_padding_with_zero=True,
+                                 show_examples=True):
     """ Loads a data file into a list of `InputBatch`s
         `cls_token_at_end` define the location of the CLS token:
             - False (Default, BERT/XLM pattern): [CLS] + A + [SEP] + B + [SEP]
@@ -494,7 +495,7 @@ def convert_examples_to_features(examples, label_list, max_seq_length,
         else:
             raise KeyError(output_mode)
 
-        if ex_index < 5:
+        if ex_index < 5 and show_examples:
             logger.info("*** Example ***")
             logger.info("guid: %s" % (example.guid))
             logger.info("tokens: %s" % " ".join(

@@ -23,6 +23,8 @@ from tensorboardX import SummaryWriter
 from tqdm import trange, tqdm
 import numpy as np
 import psutil
+import socket
+from datetime import datetime
 
 import torch
 import torch.nn as nn
@@ -33,26 +35,32 @@ from pytorch_transformers import WarmupLinearSchedule
 
 from examples.distillation.utils import logger
 from examples.distillation.dataset import Dataset
-from examples.run_glue import set_seed
+from examples.run_glue import set_seed, evaluate
 
 class Distiller:
     def __init__(self,
                  params: dict,
                  dataloader: Dataset,
                  student: nn.Module,
-                 teacher: nn.Module):
+                 teacher: nn.Module,
+                 tokenizer: nn.Module):
         logger.info('Initializing Distiller')
         self.params = params
-        self.dump_path = params.dump_path
+        self.output_dir = params.output_dir
         # self.multi_gpu = params.multi_gpu
 
         self.student = student
         self.teacher = teacher
+        self.tokenizer = tokenizer
 
         self.dataloader = dataloader
         # if self.params.n_gpu > 1:
         #     self.dataloader.split()
-        self.num_steps_epoch = int(len(self.dataloader) / params.batch_size) + 1
+        # self.num_steps_epoch = int(len(self.dataloader) / params.batch_size) + 1
+        self.num_steps_epoch = len(self.dataloader)
+        # print(len(self.dataloader), params.batch_size)
+        # print(self.num_steps_epoch, params.gradient_accumulation_steps, params.n_epoch)
+        # exit(0)
         self.get_iterator()
 
         self.temperature = params.temperature
@@ -103,6 +111,9 @@ class Distiller:
         self.scheduler = WarmupLinearSchedule(self.optimizer,
                                                 warmup_steps=warmup_steps,
                                                 t_total=num_train_optimization_steps)
+        # print("TOTAL", num_train_optimization_steps)
+        # print("WARM UP", warmup_steps)
+        # exit(0)
 
         # if self.multi_gpu:
         #     if self.fp16:
@@ -117,7 +128,9 @@ class Distiller:
         #                                                output_device=params.local_rank)
 
         logger.info('--- Initializing Tensorboard')
-        self.tensorboard = SummaryWriter(log_dir=os.path.join(self.dump_path, 'log', 'train'))
+        current_time = datetime.now().strftime('%b%d_%H-%M-%S')
+        logdir = os.path.join(self.params.output_dir, "tensorboard", current_time + '_' + socket.gethostname())
+        self.tensorboard = SummaryWriter(log_dir=logdir)
         self.tensorboard.add_text(tag='config', text_string=str(self.params), global_step=0)
 
     def get_iterator(self):
@@ -139,7 +152,7 @@ class Distiller:
         self.student.train()
         self.teacher.eval()
         do_stop = False
-        for _ in range(self.params.n_epoch):
+        for epoch_number in range(self.params.n_epoch):
             logger.info(f'--- Starting epoch {self.epoch}/{self.params.n_epoch-1}')
             # if self.multi_gpu:
             #     torch.distributed.barrier()
@@ -149,6 +162,14 @@ class Distiller:
                     batch = tuple(t.to(f'cuda:{self.params.local_rank}') for t in batch)
                 batch = tuple(t.to(self.params.device) for t in batch)
                 self.step(batch)
+
+                # print(self.params.local_rank)
+                # exit(0)
+                if self.n_total_iter % self.params.log_interval == 0 and self.params.local_rank in [-1, 0] and self.params.evaluate_during_training:
+                    results = evaluate(self.params, self.student, self.tokenizer, prefix="e{}s{}".format(epoch_number, step))
+                    for key, value in results.items():
+                        if key == "conf_mtrx": continue
+                        self.tensorboard.add_scalar('eval_{}'.format(key), value, global_step=self.n_total_iter)
 
                 # iter_bar.update()
                 # iter_bar.set_postfix({'Last_loss': f'{self.last_loss:.2f}',
@@ -171,6 +192,7 @@ class Distiller:
 
         logger.info(f'Save very last checkpoint as `pytorch_model.bin`.')
         self.save_checkpoint()
+        self.tensorboard.close()
         logger.info('Training is finished')
 
     def step(self, batch):
@@ -269,13 +291,13 @@ class Distiller:
         Log into tensorboard. Only by the master process.
         """
 
-        for param_name, param in self.student.named_parameters():
-            self.tensorboard.add_scalar(tag='parameter_mean/' + param_name, scalar_value=param.data.mean(), global_step=self.n_total_iter)
-            self.tensorboard.add_scalar(tag='parameter_std/' + param_name, scalar_value=param.data.std(), global_step=self.n_total_iter)
-            if param.grad is None:
-                continue
-            self.tensorboard.add_scalar(tag="grad_mean/" + param_name, scalar_value=param.grad.data.mean(),global_step=self.n_total_iter)
-            self.tensorboard.add_scalar(tag="grad_std/" + param_name, scalar_value=param.grad.data.std(), global_step=self.n_total_iter)
+        # for param_name, param in self.student.named_parameters():
+        #     self.tensorboard.add_scalar(tag='parameter_mean/' + param_name, scalar_value=param.data.mean(), global_step=self.n_total_iter)
+        #     self.tensorboard.add_scalar(tag='parameter_std/' + param_name, scalar_value=param.data.std(), global_step=self.n_total_iter)
+        #     if param.grad is None:
+        #         continue
+        #     self.tensorboard.add_scalar(tag="grad_mean/" + param_name, scalar_value=param.grad.data.mean(),global_step=self.n_total_iter)
+        #     self.tensorboard.add_scalar(tag="grad_std/" + param_name, scalar_value=param.grad.data.std(), global_step=self.n_total_iter)
 
         self.tensorboard.add_scalar(tag="losses/cum_avg_loss_epoch", scalar_value=self.total_loss_epoch/self.n_iter, global_step=self.n_total_iter)
         self.tensorboard.add_scalar(tag="losses/loss", scalar_value=self.last_loss, global_step=self.n_total_iter)
@@ -310,11 +332,11 @@ class Distiller:
         """
         mdl_to_save = self.student.module if hasattr(self.student, 'module') else self.student
         if checkpoint_name is not None:
-            mdl_to_save.config.save_pretrained(self.dump_path)
+            mdl_to_save.config.save_pretrained(self.output_dir)
             state_dict = mdl_to_save.state_dict()
-            torch.save(state_dict, os.path.join(self.dump_path, checkpoint_name))
+            torch.save(state_dict, os.path.join(self.output_dir, checkpoint_name))
         else:
-            mdl_to_save.save_pretrained(self.dump_path)
+            mdl_to_save.save_pretrained(self.output_dir)
 
         # Good practice: save your training arguments together with the trained model
-        torch.save(self.params, os.path.join(self.dump_path, 'training_args.bin'))
+        torch.save(self.params, os.path.join(self.output_dir, 'training_args.bin'))
