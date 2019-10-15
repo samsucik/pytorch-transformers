@@ -160,13 +160,14 @@ def main():
                         help="Rul evaluation during training at each logging step.")
     parser.add_argument("--checkpoint_interval", type=int, default=100,
                         help="Checkpoint interval.")
-    parser.add_argument("--no_cuda", action='store_true',
+    parser.add_argument("--no_cuda", type=bool, default=False,
                         help="Avoid using CUDA when available")
     parser.add_argument("--toy_mode", action='store_true', help="Toy mode for development.")
     parser.add_argument("--rich_eval", action='store_true', help="Rich evaluation (more metrics + mistake reporting).")
 
     args = parser.parse_args()
-
+    args.no_cuda = False
+    print("NO CUDA", args.no_cuda)
 
     ## ARGS ##
     init_gpu_params(args)
@@ -188,8 +189,9 @@ def main():
         logger.info(f'Param: {args}')
         with open(os.path.join(args.output_dir, 'parameters.json'), 'w') as f:
             json.dump(vars(args), f, indent=4)
-        git_log(args.output_dir)
-
+        # git_log(args.output_dir)
+    print(args.local_rank)
+    print(args.no_cuda)
     # Setup CUDA, GPU & distributed training
     if args.local_rank == -1 or args.no_cuda:
         device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
@@ -201,7 +203,8 @@ def main():
 
     logger.info("DEVICE: {}".format(args.device))
     logger.info("N_GPU: {}".format(args.n_gpu))
-    exit(0)
+    # exit(0)
+    print(args.local_rank)
 
     ### TOKENIZER ###
     # if args.teacher_type == 'bert':
