@@ -130,7 +130,7 @@ class Distiller:
         logger.info('--- Initializing Tensorboard')
         current_time = datetime.now().strftime('%b%d_%H-%M-%S')
         logdir = os.path.join(self.params.output_dir, "tensorboard", current_time + '_' + socket.gethostname())
-        self.tensorboard = SummaryWriter(log_dir=logdir)
+        self.tensorboard = SummaryWriter(log_dir=logdir, flush_secs=60)
         self.tensorboard.add_text(tag='config', text_string=str(self.params), global_step=0)
 
     def get_iterator(self):
