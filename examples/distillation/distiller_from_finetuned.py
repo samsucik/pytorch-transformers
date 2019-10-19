@@ -31,7 +31,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import AdamW
 
-from pytorch_transformers import WarmupLinearSchedule
+from pytorch_transformers import WarmupLinearSchedule, WarmupConstantSchedule
 
 from examples.distillation.utils import logger
 from examples.distillation.dataset import Dataset
@@ -105,9 +105,8 @@ class Distiller:
                                betas=(0.9, 0.98))
 
         warmup_steps = math.ceil(num_train_optimization_steps * params.warmup_prop)
-        self.scheduler = WarmupLinearSchedule(self.optimizer,
-                                                warmup_steps=warmup_steps,
-                                                t_total=num_train_optimization_steps)
+        # self.scheduler = WarmupLinearSchedule(self.optimizer, warmup_steps, t_total=num_train_optimization_steps)
+        self.scheduler = WarmupConstantSchedule(self.optimizer, warmup_steps)
 
         # if self.multi_gpu:
         #     if self.fp16:
@@ -260,7 +259,8 @@ class Distiller:
 
         self.iter()
         if self.n_iter % self.params.gradient_accumulation_steps == 0:
-            torch.nn.utils.clip_grad_norm_(self.student.parameters(), self.params.max_grad_norm)
+            grad_norm = torch.nn.utils.clip_grad_norm_(self.student.parameters(), self.params.max_grad_norm)
+            self.tensorboard.add_scalar(tag="grad_norm", scalar_value=grad_norm, global_step=self.n_total_iter)
             self.optimizer.step()
             self.optimizer.zero_grad()
             self.scheduler.step()
