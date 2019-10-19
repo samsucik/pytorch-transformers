@@ -162,7 +162,7 @@ def train(args, train_dataset, model, tokenizer):
 
                 if args.local_rank in [-1, 0] and args.logging_steps > 0 and global_step % args.logging_steps == 0:
                     # Log metrics
-                    epoch_progress = (epoch_number*steps_per_epoch + step)/steps_per_epoch
+                    epoch_progress = epoch_number*steps_per_epoch + step
                     if args.local_rank == -1 and args.evaluate_during_training:  # Only evaluate when single GPU otherwise metrics may not average well
                         results = evaluate(args, model, tokenizer, prefix="e{}s{}".format(epoch_number, step))
                         for key, value in results.items():
