@@ -161,7 +161,7 @@ def main():
     parser.add_argument("--rich_eval", action='store_true', help="Rich evaluation (more metrics + mistake reporting).")
 
     args = parser.parse_args()
-
+   
     ## ARGS ##
     init_gpu_params(args)
     set_seed(args)
@@ -250,7 +250,7 @@ def main():
         str(args.max_seq_length), str(args.task_name)))
     if os.path.exists(cached_dataset_file):
         logger.info("Loading dataset from cached file %s", cached_dataset_file)
-        d = torch.load(cached_dataset_file)
+        d = torch.load(cached_dataset_file, map_location=args.device)
         train_dataset = TensorDataset(d["input_ids"], d["input_mask"], d["segment_ids"], d["label_ids"], d["soft_label_ids"])
     else:
         logger.info("Creating dataset from scratch")

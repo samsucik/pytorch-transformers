@@ -74,6 +74,7 @@ def train(args, train_dataset, model, tokenizer):
         current_time = datetime.now().strftime('%b%d_%H-%M-%S')
         logdir = os.path.join(args.output_dir, "tensorboard", current_time + '_' + socket.gethostname())
         tb_writer = SummaryWriter(logdir=logdir)
+        tb_writer.add_text(tag='config', text_string=str(args), global_step=0)
 
     args.train_batch_size = args.per_gpu_train_batch_size * max(1, args.n_gpu)
     train_sampler = RandomSampler(train_dataset) if args.local_rank == -1 else DistributedSampler(train_dataset)
@@ -303,7 +304,7 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False, process_label
             pad_token_segment_id=4 if args.model_type in ['xlnet'] else 0,
             show_examples=args.log_examples
         )
-        if args.local_rank in [-1, 0]:
+        if args.local_rank in -[1, 0]:
             logger.info("Saving features into cached file %s", cached_features_file)
             torch.save(features, cached_features_file)
 

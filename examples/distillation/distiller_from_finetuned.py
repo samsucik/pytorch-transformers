@@ -126,6 +126,8 @@ class Distiller:
         logdir = os.path.join(self.params.output_dir, "tensorboard", current_time + '_' + socket.gethostname())
         self.tensorboard = SummaryWriter(log_dir=logdir, flush_secs=60)
         self.tensorboard.add_text(tag='config', text_string=str(self.params), global_step=0)
+        # params_dict = {k: v for k, v in vars(self.params).items()}
+        # self.tensorboard.add_hparams(params_dict, {})
 
     def get_iterator(self):
         """
