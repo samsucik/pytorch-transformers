@@ -322,7 +322,8 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False, process_label
         all_label_ids = torch.tensor([f.label_id for f in features], dtype=torch.float)
 
     if output_mode == "classification" and process_labels is not None:
-        dataset = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids, all_soft_label_ids)
+        l = len(all_soft_label_ids)
+        dataset = TensorDataset(all_input_ids[:l], all_input_mask[:l], all_segment_ids[:l], all_label_ids[:l], all_soft_label_ids)
     else:
         dataset = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
     

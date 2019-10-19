@@ -222,53 +222,52 @@ def main():
 
     def generate_logits(input_ids, input_masks, segment_ids, label_ids):
         logger.info("Creating soft labels using the teacher model...")
-        # [print(l) for l in label_ids]
         dataset = TensorDataset(input_ids, input_masks, segment_ids, label_ids)
-        dataloader = DataLoader(dataset, batch_size=128, shuffle=False)
+        B = 128
+        dataloader = DataLoader(dataset, batch_size=B, shuffle=False)
         all_logits = None
-        for batch in dataloader:
+        for i, batch in enumerate(dataloader):
             if args.n_gpu > 0:
                 batch = tuple(t.to(f'cuda:{args.local_rank}') for t in batch)
             batch = tuple(t.to(args.device) for t in batch)
-            # print(len(batch))
             inputs = {'input_ids':      batch[0],
                       'attention_mask': batch[1],
                       'token_type_ids': batch[2],
                       'labels':         batch[3]}
             with torch.no_grad():
-                # (_, logits,) = teacher(input_ids=b[0], attention_mask=b[1], token_type_ids=b[2], labels=[3])
                 (_, logits,) = teacher(**inputs)
-            # print(logits.shape, logits)
             if all_logits is None:
                 all_logits = logits
             else:
                 all_logits = torch.cat([all_logits, logits], dim=0)
-            # all_logits.append(logits)
-            print(all_logits.shape)
-            # print(all_logits)
-        # torch.tensor([f.label_id for f in features], dtype=torch.float)
+            logger.info("{}/{}".format(i*B, len(dataloader)*B))
+            if i >= 0:
+                break
         return all_logits
 
-    train_dataset = load_and_cache_examples(args, args.task_name, tokenizer, 
-                                            process_labels=generate_logits, evaluate=False)
-
-    # batch = train_dataset[0]
-    # print(batch)
-    # print(len(batch))
-    # print(batch[0])
-    # print(batch[0].shape)
-    # exit(0)
-    # exit(0)
-    # exit(0)
-
-    # print(train_dataset)
-    # print(len(train_dataset))
-    # # all_input_ids, all_input_mask, all_segment_ids, all_label_ids
-    # for s in train_dataset:
-    #     for e in s:
-    #         print(e.shape, e)
-    #     # print(s)
-    #     break
+    cached_dataset_file = os.path.join(args.data_dir, 'cached_train_{}_{}_{}_with-soft-labels'.format(
+        list(filter(None, args.model_name_or_path.split('/'))).pop(),
+        str(args.max_seq_length), str(args.task_name)))
+    if os.path.exists(cached_dataset_file):
+        logger.info("Loading dataset from cached file %s", cached_dataset_file)
+        d = torch.load(cached_dataset_file)
+        train_dataset = TensorDataset(d["input_ids"], d["input_mask"], d["segment_ids"], d["label_ids"], d["soft_label_ids"])
+    else:
+        logger.info("Creating dataset from scratch")
+        train_dataset = load_and_cache_examples(args, args.task_name, tokenizer, 
+                                                process_labels=generate_logits, evaluate=False)
+        # print(train_dataset, len(train_dataset))
+        if args.local_rank in [-1, 0]:
+            logger.info("Saving dataset into cached file %s", cached_dataset_file)
+            dataset_to_save = {}
+            for i, name in enumerate(["input_ids", "input_mask", "segment_ids", "label_ids", "soft_label_ids"]):
+                # print(i, name)
+                for sample in train_dataset:
+                    print(sample[i].shape)
+                features = [sample[i] for sample in train_dataset]
+                # print(features)
+                dataset_to_save[name] = torch.stack(features)
+            torch.save(dataset_to_save, cached_dataset_file)
 
     ## DATA LOADER ##
     # logger.info(f'Loading data from {args.data_file}')
