@@ -153,7 +153,7 @@ def main():
                         help="Show input examples on the command line during evaluation. Enabled by default.")
     parser.add_argument("--evaluate_during_training", action='store_true',
                         help="Rul evaluation during training at each logging step.")
-    parser.add_argument("--checkpoint_interval", type=int, default=100,
+    parser.add_argument("--checkpoint_interval", type=int, default=-1,
                         help="Checkpoint interval.")
     parser.add_argument("--no_cuda", type=parse_str2bool, default=False, const=True, nargs='?',
                         help="Avoid using CUDA when available")
@@ -256,41 +256,19 @@ def main():
         logger.info("Creating dataset from scratch")
         train_dataset = load_and_cache_examples(args, args.task_name, tokenizer, 
                                                 process_labels=generate_logits, evaluate=False)
-        # print(train_dataset, len(train_dataset))
         if args.local_rank in [-1, 0]:
             logger.info("Saving dataset into cached file %s", cached_dataset_file)
             dataset_to_save = {}
             for i, name in enumerate(["input_ids", "input_mask", "segment_ids", "label_ids", "soft_label_ids"]):
-                # print(i, name)
                 for sample in train_dataset:
                     print(sample[i].shape)
                 features = [sample[i] for sample in train_dataset]
-                # print(features)
                 dataset_to_save[name] = torch.stack(features)
             torch.save(dataset_to_save, cached_dataset_file)
 
-    ## DATA LOADER ##
-    # logger.info(f'Loading data from {args.data_file}')
-    # with open(args.data_file, 'rb') as fp:
-    #     data = pickle.load(fp)
-
-
-    # assert os.path.isfile(args.token_counts)
-    # logger.info(f'Loading token counts from {args.token_counts} (already pre-computed)')
-    # with open(args.token_counts, 'rb') as fp:
-    #     counts = pickle.load(fp)
-    #     assert len(counts) == args.vocab_size
-    # token_probs = np.maximum(counts, 1) ** -args.mlm_smoothing
-    # for idx in special_tok_ids.values():
-    #     token_probs[idx] = 0.  # do not predict special tokens
-    # token_probs = torch.from_numpy(token_probs)
-
-
-    # train_dataloader = Dataset(params=args, data=data)
     train_sampler = RandomSampler(train_dataset)
     train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.batch_size)
     logger.info(f'Data loader created.')
-
 
     ## STUDENT ##
     # if args.from_pretrained_weights is not None:

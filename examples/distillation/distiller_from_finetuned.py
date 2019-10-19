@@ -58,9 +58,6 @@ class Distiller:
         #     self.dataloader.split()
         # self.num_steps_epoch = int(len(self.dataloader) / params.batch_size) + 1
         self.num_steps_epoch = len(self.dataloader)
-        # print(len(self.dataloader), params.batch_size)
-        # print(self.num_steps_epoch, params.gradient_accumulation_steps, params.n_epoch)
-        # exit(0)
         self.get_iterator()
 
         self.temperature = params.temperature
@@ -111,9 +108,6 @@ class Distiller:
         self.scheduler = WarmupLinearSchedule(self.optimizer,
                                                 warmup_steps=warmup_steps,
                                                 t_total=num_train_optimization_steps)
-        # print("TOTAL", num_train_optimization_steps)
-        # print("WARM UP", warmup_steps)
-        # exit(0)
 
         # if self.multi_gpu:
         #     if self.fp16:
@@ -163,8 +157,6 @@ class Distiller:
                 batch = tuple(t.to(self.params.device) for t in batch)
                 self.step(batch)
 
-                # print(self.params.local_rank)
-                # exit(0)
                 if self.n_total_iter % self.params.log_interval == 0 and self.params.local_rank in [-1, 0] and self.params.evaluate_during_training:
                     results = evaluate(self.params, self.student, self.tokenizer, prefix="e{}s{}".format(epoch_number, step))
                     for key, value in results.items():
@@ -208,9 +200,6 @@ class Distiller:
         t_logits = batch[4]
         (_, s_logits,) = self.student(**inputs)
         assert s_logits.size() == t_logits.size()
-
-        # with torch.no_grad():
-        #     (_, t_logits,) = self.teacher(**inputs)
 
         loss_ce = self.ce_loss_fct(F.log_softmax(s_logits/self.temperature, dim=-1),
                                    F.softmax(t_logits/self.temperature, dim=-1)) * (self.temperature)**2
@@ -284,8 +273,8 @@ class Distiller:
         if self.n_total_iter % self.params.log_interval == 0:
             self.log_tensorboard()
             self.last_log = time.time()
-        if self.n_total_iter % self.params.checkpoint_interval == 0:
-            self.save_checkpoint()
+        if self.params.checkpoint_interval > 0 and self.n_total_iter % self.params.checkpoint_interval == 0:
+            self.save_checkpoint(checkpoint_name="model_e{}s{}".format(self.epoch, self.n_iter))
 
     def log_tensorboard(self):
         """
