@@ -128,6 +128,8 @@ def train(args, train_dataset, model, tokenizer):
     set_seed(args)  # Added here for reproductibility (even between python 2 and 3)
     for epoch_number in train_iterator:
         epoch_iterator = tqdm(train_dataloader, desc="Iteration", disable=args.local_rank not in [-1, 0])
+        steps_per_epoch = len(epoch_iterator)
+
         for step, batch in enumerate(epoch_iterator):
             model.train()
             batch = tuple(t.to(args.device) for t in batch)
@@ -160,13 +162,14 @@ def train(args, train_dataset, model, tokenizer):
 
                 if args.local_rank in [-1, 0] and args.logging_steps > 0 and global_step % args.logging_steps == 0:
                     # Log metrics
+                    epoch_progress = (epoch_number*steps_per_epoch + step)/steps_per_epoch
                     if args.local_rank == -1 and args.evaluate_during_training:  # Only evaluate when single GPU otherwise metrics may not average well
                         results = evaluate(args, model, tokenizer, prefix="e{}s{}".format(epoch_number, step))
                         for key, value in results.items():
                             if key == "conf_mtrx": continue
-                            tb_writer.add_scalar('eval_{}'.format(key), value, global_step)
-                    tb_writer.add_scalar('lr', scheduler.get_lr()[0], global_step)
-                    tb_writer.add_scalar('loss', (tr_loss - logging_loss)/args.logging_steps, global_step)
+                            tb_writer.add_scalar('eval_{}'.format(key), value, epoch_progress)
+                    tb_writer.add_scalar('lr', scheduler.get_lr()[0], epoch_progress)
+                    tb_writer.add_scalar('loss', (tr_loss - logging_loss)/args.logging_steps, epoch_progress)
                     logging_loss = tr_loss
 
                 if args.local_rank in [-1, 0] and args.save_steps > 0 and global_step % args.save_steps == 0:
