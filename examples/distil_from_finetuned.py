@@ -241,8 +241,8 @@ def main():
             else:
                 all_logits = torch.cat([all_logits, logits], dim=0)
             logger.info("{}/{}".format(i*B, len(dataloader)*B))
-            if i >= 0:
-                break
+            #if i >= 0:
+            #    break
         return all_logits
 
     cached_dataset_file = os.path.join(args.data_dir, 'cached_train_{}_{}_{}_with-soft-labels'.format(
