@@ -221,6 +221,7 @@ def main():
     args.output_mode = output_modes[args.task_name]
 
     def generate_logits(input_ids, input_masks, segment_ids, label_ids):
+        logger.info("Creating soft labels using the teacher model...")
         # [print(l) for l in label_ids]
         dataset = TensorDataset(input_ids, input_masks, segment_ids, label_ids)
         dataloader = DataLoader(dataset, batch_size=128, shuffle=False)
