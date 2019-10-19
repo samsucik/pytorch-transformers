@@ -227,6 +227,9 @@ def main():
         dataloader = DataLoader(dataset, batch_size=128, shuffle=False)
         all_logits = None
         for batch in dataloader:
+            if args.n_gpu > 0:
+                batch = tuple(t.to(f'cuda:{args.local_rank}') for t in batch)
+            batch = tuple(t.to(args.device) for t in batch)
             # print(len(batch))
             inputs = {'input_ids':      batch[0],
                       'attention_mask': batch[1],
