@@ -15,6 +15,7 @@
 """ Utils to train DistilBERT
     adapted in part from Facebook, Inc XLM model (https://github.com/facebookresearch/XLM)
 """
+import argparse
 import git
 import json
 import os
@@ -127,3 +128,13 @@ def set_seed(args):
     torch.manual_seed(args.seed)
     if args.n_gpu > 0:
         torch.cuda.manual_seed_all(args.seed)
+
+def parse_str2bool(v):
+    if isinstance(v, bool):
+       return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1', 'True'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0', 'False'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')

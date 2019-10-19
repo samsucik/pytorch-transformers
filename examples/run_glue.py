@@ -270,7 +270,7 @@ def evaluate(args, model, tokenizer, prefix=""):
     return results
 
 
-def load_and_cache_examples(args, task, tokenizer, evaluate=False, get_raw_examples=False):
+def load_and_cache_examples(args, task, tokenizer, evaluate=False, process_labels=None, get_raw_examples=False):
     if args.local_rank not in [-1, 0] and not evaluate:
         torch.distributed.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
 
@@ -316,10 +316,15 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False, get_raw_examp
     all_segment_ids = torch.tensor([f.segment_ids for f in features], dtype=torch.long)
     if output_mode == "classification":
         all_label_ids = torch.tensor([f.label_id for f in features], dtype=torch.long)
+        if process_labels is not None:
+            all_soft_label_ids = process_labels(all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
     elif output_mode == "regression":
         all_label_ids = torch.tensor([f.label_id for f in features], dtype=torch.float)
 
-    dataset = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
+    if output_mode == "classification" and process_labels is not None:
+        dataset = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids, all_soft_label_ids)
+    else:
+        dataset = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
     
     if get_raw_examples:
         return dataset, examples

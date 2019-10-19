@@ -23,13 +23,13 @@ import shutil
 import numpy as np
 import torch
 
-from torch.utils.data import DataLoader, RandomSampler
+from torch.utils.data import DataLoader, RandomSampler, TensorDataset
 
 from pytorch_transformers import BertTokenizer, BertForSequenceClassification, BertConfig
 # from pytorch_transformers import DistilBertForMaskedLM, DistilBertConfig
 
 from distillation.distiller_from_finetuned import Distiller
-from distillation.utils import git_log, logger, init_gpu_params, set_seed
+from distillation.utils import git_log, logger, init_gpu_params, set_seed, parse_str2bool
 from distillation.dataset import Dataset
 
 from utils_glue import processors, output_modes
@@ -140,11 +140,6 @@ def main():
     parser.add_argument("--initializer_range", default=0.02, type=float,
                         help="Random initialization range.")
 
-    # parser.add_argument('--fp16', action='store_true',
-    #                     help="Whether to use 16-bit (mixed) precision (through NVIDIA apex) instead of 32-bit")
-    # parser.add_argument('--fp16_opt_level', type=str, default='O1',
-    #                     help="For fp16: Apex AMP optimization level selected in ['O0', 'O1', 'O2', and 'O3']."
-    #                          "See details at https://nvidia.github.io/apex/amp.html")
     parser.add_argument("--n_gpu", type=int, default=1,
                         help="Number of GPUs in the node.")
     parser.add_argument("--local_rank", type=int, default=-1,
@@ -160,14 +155,12 @@ def main():
                         help="Rul evaluation during training at each logging step.")
     parser.add_argument("--checkpoint_interval", type=int, default=100,
                         help="Checkpoint interval.")
-    parser.add_argument("--no_cuda", type=bool, default=False,
+    parser.add_argument("--no_cuda", type=parse_str2bool, default=False, const=True, nargs='?',
                         help="Avoid using CUDA when available")
     parser.add_argument("--toy_mode", action='store_true', help="Toy mode for development.")
     parser.add_argument("--rich_eval", action='store_true', help="Rich evaluation (more metrics + mistake reporting).")
 
     args = parser.parse_args()
-    args.no_cuda = False
-    print("NO CUDA", args.no_cuda)
 
     ## ARGS ##
     init_gpu_params(args)
@@ -189,9 +182,7 @@ def main():
         logger.info(f'Param: {args}')
         with open(os.path.join(args.output_dir, 'parameters.json'), 'w') as f:
             json.dump(vars(args), f, indent=4)
-        # git_log(args.output_dir)
-    print(args.local_rank)
-    print(args.no_cuda)
+
     # Setup CUDA, GPU & distributed training
     if args.local_rank == -1 or args.no_cuda:
         device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
@@ -203,20 +194,22 @@ def main():
 
     logger.info("DEVICE: {}".format(args.device))
     logger.info("N_GPU: {}".format(args.n_gpu))
-    # exit(0)
-    print(args.local_rank)
 
     ### TOKENIZER ###
-    # if args.teacher_type == 'bert':
     tokenizer = BertTokenizer.from_pretrained(args.teacher_name, do_lower_case=args.do_lower_case)
-    # elif args.teacher_type == 'roberta':
-    #     tokenizer = RobertaTokenizer.from_pretrained(args.teacher_name)
     special_tok_ids = {}
     for tok_name, tok_symbol in tokenizer.special_tokens_map.items():
         idx = tokenizer.all_special_tokens.index(tok_symbol)
         special_tok_ids[tok_name] = tokenizer.all_special_ids[idx]
     logger.info(f'Special tokens {special_tok_ids}')
     args.special_tok_ids = special_tok_ids
+
+    ## TEACHER ##
+    teacher = BertForSequenceClassification.from_pretrained(args.teacher_name) # take outputs[1] for the logits
+    if args.n_gpu > 0:
+        teacher.to(f'cuda:{args.local_rank}')
+    logger.info(f'Teacher loaded from {args.teacher_name}.')
+
 
     # Prepare GLUE task
     args.task_name = args.task_name.lower()
@@ -226,7 +219,52 @@ def main():
     args.max_seq_length = args.max_position_embeddings
     args.model_type = "bert"
     args.output_mode = output_modes[args.task_name]
-    train_dataset = load_and_cache_examples(args, args.task_name, tokenizer, evaluate=False)
+
+    def generate_logits(input_ids, input_masks, segment_ids, label_ids):
+        # [print(l) for l in label_ids]
+        dataset = TensorDataset(input_ids, input_masks, segment_ids, label_ids)
+        dataloader = DataLoader(dataset, batch_size=128, shuffle=False)
+        all_logits = None
+        for batch in dataloader:
+            # print(len(batch))
+            inputs = {'input_ids':      batch[0],
+                      'attention_mask': batch[1],
+                      'token_type_ids': batch[2],
+                      'labels':         batch[3]}
+            with torch.no_grad():
+                # (_, logits,) = teacher(input_ids=b[0], attention_mask=b[1], token_type_ids=b[2], labels=[3])
+                (_, logits,) = teacher(**inputs)
+            # print(logits.shape, logits)
+            if all_logits is None:
+                all_logits = logits
+            else:
+                all_logits = torch.cat([all_logits, logits], dim=0)
+            # all_logits.append(logits)
+            print(all_logits.shape)
+            # print(all_logits)
+        # torch.tensor([f.label_id for f in features], dtype=torch.float)
+        return all_logits
+
+    train_dataset = load_and_cache_examples(args, args.task_name, tokenizer, 
+                                            process_labels=generate_logits, evaluate=False)
+
+    # batch = train_dataset[0]
+    # print(batch)
+    # print(len(batch))
+    # print(batch[0])
+    # print(batch[0].shape)
+    # exit(0)
+    # exit(0)
+    # exit(0)
+
+    # print(train_dataset)
+    # print(len(train_dataset))
+    # # all_input_ids, all_input_mask, all_segment_ids, all_label_ids
+    # for s in train_dataset:
+    #     for e in s:
+    #         print(e.shape, e)
+    #     # print(s)
+    #     break
 
     ## DATA LOADER ##
     # logger.info(f'Loading data from {args.data_file}')
@@ -280,13 +318,6 @@ def main():
     if args.n_gpu > 0:
         student.to(f'cuda:{args.local_rank}')
     logger.info(f'Student loaded.')
-
-
-    ## TEACHER ##
-    teacher = BertForSequenceClassification.from_pretrained(args.teacher_name) # take outputs[1] for the logits
-    if args.n_gpu > 0:
-        teacher.to(f'cuda:{args.local_rank}')
-    logger.info(f'Teacher loaded from {args.teacher_name}.')
 
     ## DISTILLER ##
     torch.cuda.empty_cache()

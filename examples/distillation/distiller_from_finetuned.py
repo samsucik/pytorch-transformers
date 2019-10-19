@@ -205,11 +205,12 @@ class Distiller:
                   'token_type_ids': batch[2],
                   'labels':         batch[3]}
         
+        t_logits = batch[4]
         (_, s_logits,) = self.student(**inputs)
-
-        with torch.no_grad():
-            (_, t_logits,) = self.teacher(**inputs)
         assert s_logits.size() == t_logits.size()
+
+        # with torch.no_grad():
+        #     (_, t_logits,) = self.teacher(**inputs)
 
         loss_ce = self.ce_loss_fct(F.log_softmax(s_logits/self.temperature, dim=-1),
                                    F.softmax(t_logits/self.temperature, dim=-1)) * (self.temperature)**2
