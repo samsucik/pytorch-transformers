@@ -275,8 +275,6 @@ class Distiller:
         if self.n_total_iter % self.params.log_interval == 0:
             self.log_tensorboard()
             self.last_log = time.time()
-        if self.params.checkpoint_interval > 0 and self.n_total_iter % self.params.checkpoint_interval == 0:
-            self.save_checkpoint(checkpoint_name="model_e{}s{}".format(self.epoch, self.n_iter))
 
     def log_tensorboard(self):
         """
@@ -310,7 +308,10 @@ class Distiller:
         """
         logger.info(f'{self.n_sequences_epoch} sequences have been trained during this epoch.')
 
-        self.save_checkpoint(checkpoint_name=f'model_epoch_{self.epoch}.pth')
+        if (self.params.checkpoint_interval > 1 and self.epoch > 0 and self.epoch % self.params.checkpoint_interval == 0) or 
+           (self.params.checkpoint_interval == 1):
+            self.save_checkpoint(checkpoint_name=f'model_epoch_{self.epoch}.pth')
+        
         self.tensorboard.add_scalar(tag='epoch/loss', scalar_value=self.total_loss_epoch/self.n_iter, global_step=self.epoch)
 
         self.epoch += 1

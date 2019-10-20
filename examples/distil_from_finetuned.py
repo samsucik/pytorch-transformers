@@ -154,7 +154,7 @@ def main():
     parser.add_argument("--evaluate_during_training", action='store_true',
                         help="Rul evaluation during training at each logging step.")
     parser.add_argument("--checkpoint_interval", type=int, default=-1,
-                        help="Checkpoint interval.")
+                        help="Every how many epochs is a checkpoint saved at the end of the epoch.")
     parser.add_argument("--no_cuda", type=parse_str2bool, default=False, const=True, nargs='?',
                         help="Avoid using CUDA when available")
     parser.add_argument("--toy_mode", action='store_true', help="Toy mode for development.")
