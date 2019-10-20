@@ -80,6 +80,8 @@ def main():
     parser.add_argument("--tie_weights_", action='store_false',
                         help="If true, we tie the embeddings matrix with the projection over the vocabulary matrix. Default is true.")
 
+    parser.add_argument("--from_pretrained", default="none", type=str,
+                        help="Load pretrained student initialization checkpoint (the config params must agree with the checkpoint).")
     # parser.add_argument("--from_pretrained_weights", default=None, type=str,
     #                     help="Load student initialization checkpoint.")
     # parser.add_argument("--from_pretrained_config", default=None, type=str,
@@ -197,7 +199,7 @@ def main():
     logger.info("DEVICE: {}".format(args.device))
     logger.info("N_GPU: {}".format(args.n_gpu))
 
-    ### TOKENIZER ###
+    ## TOKENIZER ##
     tokenizer = BertTokenizer.from_pretrained(args.teacher_name, do_lower_case=args.do_lower_case)
     special_tok_ids = {}
     for tok_name, tok_symbol in tokenizer.special_tokens_map.items():
@@ -212,8 +214,43 @@ def main():
         teacher.to(f'cuda:{args.local_rank}')
     logger.info(f'Teacher loaded from {args.teacher_name}.')
 
+    ## STUDENT ##
+    student_config = BertConfig(
+        vocab_size_or_config_json_file=args.vocab_size,
+        hidden_size=args.dim,
+        num_hidden_layers=args.n_layers,
+        num_attention_heads=args.n_heads,
+        intermediate_size=args.hidden_dim,
+        hidden_dropout_prob=args.dropout,
+        attention_probs_dropout_prob=args.attention_dropout,
+        max_position_embeddings=args.max_position_embeddings,
+        hidden_act=args.activation,
+        initializer_range=0.02)
+    
+    if args.from_pretrained != "none":
+        logger.info("Loading pre-trained student from: {}".format(args.from_pretrained))
+        student = BertForSequenceClassification.from_pretrained(args.from_pretrained, config=student_config)
+    else:
+        student = BertForSequenceClassification(student_config)
+    # if args.from_pretrained_weights is not None:
+    #     assert os.path.isfile(args.from_pretrained_weights)
+    #     assert os.path.isfile(args.from_pretrained_config)
+    #     logger.info(f'Loading pretrained weights from {args.from_pretrained_weights}')
+    #     logger.info(f'Loading pretrained config from {args.from_pretrained_config}')
+    #     stu_architecture_config = DistilBertConfig.from_json_file(args.from_pretrained_config)
+    #     stu_architecture_config.output_hidden_states = True
+    #     student = DistilBertForMaskedLM.from_pretrained(args.from_pretrained_weights,
+    #                                                     config=stu_architecture_config)
+    # else:
+    #     args.vocab_size_or_config_json_file = args.vocab_size
+    #     stu_architecture_config = DistilBertConfig(**vars(args), output_hidden_states=True)
+    #     student = DistilBertForMaskedLM(stu_architecture_config)
+    if args.n_gpu > 0:
+        student.to(f'cuda:{args.local_rank}')
+    logger.info(f'Student loaded.')
 
-    # Prepare GLUE task
+
+    ## GLUE TASK ##
     args.task_name = args.task_name.lower()
     if args.task_name not in processors:
         raise ValueError("Task not found: %s" % (args.task_name))
@@ -271,36 +308,6 @@ def main():
     train_sampler = RandomSampler(train_dataset)
     train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.batch_size)
     logger.info(f'Data loader created.')
-
-    ## STUDENT ##
-    # if args.from_pretrained_weights is not None:
-    #     assert os.path.isfile(args.from_pretrained_weights)
-    #     assert os.path.isfile(args.from_pretrained_config)
-    #     logger.info(f'Loading pretrained weights from {args.from_pretrained_weights}')
-    #     logger.info(f'Loading pretrained config from {args.from_pretrained_config}')
-    #     stu_architecture_config = DistilBertConfig.from_json_file(args.from_pretrained_config)
-    #     stu_architecture_config.output_hidden_states = True
-    #     student = DistilBertForMaskedLM.from_pretrained(args.from_pretrained_weights,
-    #                                                     config=stu_architecture_config)
-    # else:
-    #     args.vocab_size_or_config_json_file = args.vocab_size
-    #     stu_architecture_config = DistilBertConfig(**vars(args), output_hidden_states=True)
-    #     student = DistilBertForMaskedLM(stu_architecture_config)
-    student_config = BertConfig(
-        vocab_size_or_config_json_file=args.vocab_size,
-        hidden_size=args.dim,
-        num_hidden_layers=args.n_layers,
-        num_attention_heads=args.n_heads,
-        intermediate_size=args.hidden_dim,
-        hidden_dropout_prob=args.dropout,
-        attention_probs_dropout_prob=args.attention_dropout,
-        max_position_embeddings=args.max_position_embeddings,
-        hidden_act=args.activation,
-        initializer_range=0.02)
-    student = BertForSequenceClassification(student_config)
-    if args.n_gpu > 0:
-        student.to(f'cuda:{args.local_rank}')
-    logger.info(f'Student loaded.')
 
     ## DISTILLER ##
     torch.cuda.empty_cache()
