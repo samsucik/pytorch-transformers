@@ -63,6 +63,8 @@ class Distiller:
         self.temperature = params.temperature
         assert self.temperature > 0.
 
+        self.use_hard_labels = params.use_hard_labels
+
         self.alpha_ce = params.alpha_ce
         self.alpha_mse = params.alpha_mse
         self.alpha_cos = params.alpha_cos
@@ -197,43 +199,48 @@ class Distiller:
                   'attention_mask': batch[1],
                   'token_type_ids': batch[2],
                   'labels':         batch[3]}
-        
-        t_logits = batch[4]
-        (_, s_logits,) = self.student(**inputs)
-        assert s_logits.size() == t_logits.size()
 
-        loss_ce = self.ce_loss_fct(F.log_softmax(s_logits/self.temperature, dim=-1),
-                                   F.softmax(t_logits/self.temperature, dim=-1)) * (self.temperature)**2
-        loss = self.alpha_ce*loss_ce
-        if self.alpha_mse > 0.:
-            loss_mse = self.mse_loss_fct(s_logits, t_logits)/s_logits.size(0) # Reproducing batchmean reduction
-            loss += self.alpha_mse * loss_mse
+        if self.use_hard_labels:
+            outputs = self.student(**inputs)
+            loss = outputs[0]
+        else:    
+            t_logits = batch[4]
+            (_, s_logits,) = self.student(**inputs)
+            assert s_logits.size() == t_logits.size()
+
+            loss_ce = self.ce_loss_fct(F.log_softmax(s_logits/self.temperature, dim=-1),
+                                       F.softmax(t_logits/self.temperature, dim=-1)) * (self.temperature)**2
+            loss = self.alpha_ce*loss_ce
+            self.last_loss_ce = loss_ce.item()
+    
+            """
+            if self.alpha_mse > 0.:
+                loss_mse = self.mse_loss_fct(s_logits, t_logits)/s_logits.size(0) # Reproducing batchmean reduction
+                loss += self.alpha_mse * loss_mse
+                
+                self.last_loss_mse = loss_mse.item()
         
-        """
-        if self.alpha_cos > 0.:
-            s_hidden_states = s_hidden_states[-1]                              # (bs, seq_length, dim)
-            t_hidden_states = t_hidden_states[-1]                              # (bs, seq_length, dim)
-            mask = attention_mask.unsqueeze(-1).expand_as(s_hidden_states)     # (bs, seq_length, dim)
-            assert s_hidden_states.size() == t_hidden_states.size()
-            dim = s_hidden_states.size(-1)
+            if self.alpha_cos > 0.:
+                s_hidden_states = s_hidden_states[-1]                              # (bs, seq_length, dim)
+                t_hidden_states = t_hidden_states[-1]                              # (bs, seq_length, dim)
+                mask = attention_mask.unsqueeze(-1).expand_as(s_hidden_states)     # (bs, seq_length, dim)
+                assert s_hidden_states.size() == t_hidden_states.size()
+                dim = s_hidden_states.size(-1)
+                
+                s_hidden_states_slct = torch.masked_select(s_hidden_states, mask)        # (bs * seq_length * dim)
+                s_hidden_states_slct = s_hidden_states_slct.view(-1, dim)                # (bs * seq_length, dim)
+                t_hidden_states_slct = torch.masked_select(t_hidden_states, mask)        # (bs * seq_length * dim)
+                t_hidden_states_slct = t_hidden_states_slct.view(-1, dim)                # (bs * seq_length, dim)
             
-            s_hidden_states_slct = torch.masked_select(s_hidden_states, mask)        # (bs * seq_length * dim)
-            s_hidden_states_slct = s_hidden_states_slct.view(-1, dim)                # (bs * seq_length, dim)
-            t_hidden_states_slct = torch.masked_select(t_hidden_states, mask)        # (bs * seq_length * dim)
-            t_hidden_states_slct = t_hidden_states_slct.view(-1, dim)                # (bs * seq_length, dim)
-        
-            target = s_hidden_states_slct.new(s_hidden_states_slct.size(0)).fill_(1) # (bs * seq_length,)
-            loss_cos = self.cosine_loss_fct(s_hidden_states_slct, t_hidden_states_slct, target)
-            loss += self.alpha_cos * loss_cos
-        """
+                target = s_hidden_states_slct.new(s_hidden_states_slct.size(0)).fill_(1) # (bs * seq_length,)
+                loss_cos = self.cosine_loss_fct(s_hidden_states_slct, t_hidden_states_slct, target)
+                loss += self.alpha_cos * loss_cos
+
+                self.last_loss_cos = loss_cos.item()
+            """
 
         self.total_loss_epoch += loss.item()
-        self.last_loss = loss.item()
-        self.last_loss_ce = loss_ce.item()
-        if self.alpha_mse > 0.:
-            self.last_loss_mse = loss_mse.item()
-        # if self.alpha_cos > 0.:
-        #     self.last_loss_cos = loss_cos.item()
+        self.last_loss = loss.item()        
 
         self.optimize(loss)
 
