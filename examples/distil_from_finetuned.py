@@ -208,12 +208,6 @@ def main():
     logger.info(f'Special tokens {special_tok_ids}')
     args.special_tok_ids = special_tok_ids
 
-    ## TEACHER ##
-    teacher = BertForSequenceClassification.from_pretrained(args.teacher_name) # take outputs[1] for the logits
-    if args.n_gpu > 0:
-        teacher.to(f'cuda:{args.local_rank}')
-    logger.info(f'Teacher loaded from {args.teacher_name}.')
-
     ## STUDENT ##
     student_config = BertConfig(
         vocab_size_or_config_json_file=args.vocab_size,
@@ -259,30 +253,6 @@ def main():
     args.model_type = "bert"
     args.output_mode = output_modes[args.task_name]
 
-    def generate_logits(input_ids, input_masks, segment_ids, label_ids):
-        logger.info("Creating soft labels using the teacher model...")
-        dataset = TensorDataset(input_ids, input_masks, segment_ids, label_ids)
-        B = 128
-        dataloader = DataLoader(dataset, batch_size=B, shuffle=False)
-        all_logits = None
-        for i, batch in enumerate(dataloader):
-            if args.n_gpu > 0:
-                batch = tuple(t.to(f'cuda:{args.local_rank}') for t in batch)
-            batch = tuple(t.to(args.device) for t in batch)
-            inputs = {'input_ids':      batch[0],
-                      'attention_mask': batch[1],
-                      'token_type_ids': batch[2],
-                      'labels':         batch[3]}
-            with torch.no_grad():
-                (_, logits,) = teacher(**inputs)
-            if all_logits is None:
-                all_logits = logits
-            else:
-                all_logits = torch.cat([all_logits, logits], dim=0)
-            logger.info("{}/{}".format(i*B, len(dataloader)*B))
-            #if i >= 0:
-            #    break
-        return all_logits
 
     cached_dataset_file = os.path.join(args.data_dir, 'cached_train_{}_{}_{}_with-soft-labels'.format(
         list(filter(None, args.model_name_or_path.split('/'))).pop(),
@@ -292,7 +262,39 @@ def main():
         d = torch.load(cached_dataset_file, map_location=args.device)
         train_dataset = TensorDataset(d["input_ids"], d["input_mask"], d["segment_ids"], d["label_ids"], d["soft_label_ids"])
     else:
-        logger.info("Creating dataset from scratch")
+        logger.info("Creating dataset from scratch using the teacher")
+        
+        ## TEACHER ##
+        teacher = BertForSequenceClassification.from_pretrained(args.teacher_name) # take outputs[1] for the logits
+        if args.n_gpu > 0:
+            teacher.to(f'cuda:{args.local_rank}')
+        logger.info(f'Teacher loaded from {args.teacher_name}.')
+    
+        def generate_logits(input_ids, input_masks, segment_ids, label_ids):
+            logger.info("Creating soft labels using the teacher model...")
+            dataset = TensorDataset(input_ids, input_masks, segment_ids, label_ids)
+            B = 128
+            dataloader = DataLoader(dataset, batch_size=B, shuffle=False)
+            all_logits = None
+            for i, batch in enumerate(dataloader):
+                if args.n_gpu > 0:
+                    batch = tuple(t.to(f'cuda:{args.local_rank}') for t in batch)
+                batch = tuple(t.to(args.device) for t in batch)
+                inputs = {'input_ids':      batch[0],
+                          'attention_mask': batch[1],
+                          'token_type_ids': batch[2],
+                          'labels':         batch[3]}
+                with torch.no_grad():
+                    (_, logits,) = teacher(**inputs)
+                if all_logits is None:
+                    all_logits = logits
+                else:
+                    all_logits = torch.cat([all_logits, logits], dim=0)
+                logger.info("{}/{}".format(i*B, len(dataloader)*B))
+                #if i >= 0:
+                #    break
+            return all_logits
+
         train_dataset = load_and_cache_examples(args, args.task_name, tokenizer, 
                                                 process_labels=generate_logits, evaluate=False)
         if args.local_rank in [-1, 0]:
@@ -315,7 +317,7 @@ def main():
                           dataloader=train_dataloader,
                           # token_probs=token_probs,
                           student=student,
-                          teacher=teacher,
+                          # teacher=teacher,
                           tokenizer=tokenizer)
     distiller.train()
     logger.info("Let's go get some drinks.")

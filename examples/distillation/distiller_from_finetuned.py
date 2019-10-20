@@ -42,7 +42,7 @@ class Distiller:
                  params: dict,
                  dataloader: Dataset,
                  student: nn.Module,
-                 teacher: nn.Module,
+                 # teacher: nn.Module,
                  tokenizer: nn.Module):
         logger.info('Initializing Distiller')
         self.params = params
@@ -50,7 +50,7 @@ class Distiller:
         # self.multi_gpu = params.multi_gpu
 
         self.student = student
-        self.teacher = teacher
+        # self.teacher = teacher
         self.tokenizer = tokenizer
 
         self.dataloader = dataloader
@@ -147,7 +147,7 @@ class Distiller:
         logger.info('Starting training')
         self.last_log = time.time()
         self.student.train()
-        self.teacher.eval()
+        # self.teacher.eval()
         do_stop = False
         for epoch_number in range(self.params.n_epoch):
             logger.info(f'--- Starting epoch {self.epoch}/{self.params.n_epoch-1}')
