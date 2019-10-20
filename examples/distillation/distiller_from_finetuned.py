@@ -308,7 +308,7 @@ class Distiller:
         """
         logger.info(f'{self.n_sequences_epoch} sequences have been trained during this epoch.')
 
-        if (self.params.checkpoint_interval > 1 and self.epoch > 0 and self.epoch % self.params.checkpoint_interval == 0) or 
+        if (self.params.checkpoint_interval > 1 and self.epoch > 0 and self.epoch % self.params.checkpoint_interval == 0) or \
            (self.params.checkpoint_interval == 1):
             self.save_checkpoint(checkpoint_name=f'model_epoch_{self.epoch}.pth')
         
