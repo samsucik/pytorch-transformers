@@ -84,6 +84,9 @@ def url_to_filename(url, etag=None):
     If `etag` is specified, append its hash to the url's, delimited
     by a period.
     """
+    if "https://s3.amazonaws.com" in url:
+        return url.split("/")[-1]
+
     url_bytes = url.encode('utf-8')
     url_hash = sha256(url_bytes)
     filename = url_hash.hexdigest()

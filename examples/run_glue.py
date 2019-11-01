@@ -93,7 +93,8 @@ def train(args, train_dataset, model, tokenizer):
         {'params': [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
         ]
     optimizer = AdamW(optimizer_grouped_parameters, lr=args.learning_rate, eps=args.adam_epsilon)
-    scheduler = WarmupLinearSchedule(optimizer, warmup_steps=args.warmup_steps, t_total=t_total)
+    warmup_steps = int(t_total*args.warmup_proportion)
+    scheduler = WarmupLinearSchedule(optimizer, warmup_steps=warmup_steps, t_total=t_total)
     if args.fp16:
         try:
             from apex import amp
@@ -165,11 +166,15 @@ def train(args, train_dataset, model, tokenizer):
                     epoch_progress = epoch_number*steps_per_epoch + step
                     if args.local_rank == -1 and args.evaluate_during_training:  # Only evaluate when single GPU otherwise metrics may not average well
                         results = evaluate(args, model, tokenizer, prefix="e{}s{}".format(epoch_number, step))
+                        results_str = ", ".join(["{}: {:.5f}".format(k, v) for k, v in results.items() if k != "conf_mtrx"])
                         for key, value in results.items():
                             if key == "conf_mtrx": continue
                             tb_writer.add_scalar('eval_{}'.format(key), value, epoch_progress)
+                    else:
+                        results_str = None
                     tb_writer.add_scalar('lr', scheduler.get_lr()[0], epoch_progress)
                     tb_writer.add_scalar('loss', (tr_loss - logging_loss)/args.logging_steps, epoch_progress)
+                    print("E{}S{}: {:.5f} (train) {} (val)".format(epoch_number, step, (tr_loss - logging_loss)/args.logging_steps, results_str))
                     logging_loss = tr_loss
 
                 if args.local_rank in [-1, 0] and args.save_steps > 0 and global_step % args.save_steps == 0:
@@ -389,8 +394,8 @@ def main():
                         help="Total number of training epochs to perform.")
     parser.add_argument("--max_steps", default=-1, type=int,
                         help="If > 0: set total number of training steps to perform. Override num_train_epochs.")
-    parser.add_argument("--warmup_steps", default=0, type=int,
-                        help="Linear warmup over warmup_steps.")
+    parser.add_argument("--warmup_proportion", default=0.1, type=float,
+                        help="Linear warmup over this proportion of total training minibatch steps.")
 
     parser.add_argument('--logging_steps', type=int, default=50,
                         help="Log every X updates steps.")
@@ -422,8 +427,6 @@ def main():
     parser.add_argument("--toy_mode", action='store_true', help="Toy mode for development.")
     parser.add_argument("--rich_eval", action='store_true', help="Rich evaluation (more metrics + mistake reporting).")
     args = parser.parse_args()
-    # if args.toy_mode:
-    #     args.max_steps = 1
 
     if os.path.exists(args.output_dir) and os.listdir(args.output_dir) and args.do_train and not args.overwrite_output_dir:
         raise ValueError("Output directory ({}) already exists and is not empty. Use --overwrite_output_dir to overcome.".format(args.output_dir))
@@ -472,9 +475,9 @@ def main():
 
     args.model_type = args.model_type.lower()
     config_class, model_class, tokenizer_class = MODEL_CLASSES[args.model_type]
-    config = config_class.from_pretrained(args.config_name if args.config_name else args.model_name_or_path, num_labels=num_labels, finetuning_task=args.task_name)
-    tokenizer = tokenizer_class.from_pretrained(args.tokenizer_name if args.tokenizer_name else args.model_name_or_path, do_lower_case=args.do_lower_case)
-    model = model_class.from_pretrained(args.model_name_or_path, from_tf=bool('.ckpt' in args.model_name_or_path), config=config)
+    config = config_class.from_pretrained(args.config_name if args.config_name else args.model_name_or_path, cache_dir=args.cache_dir, num_labels=num_labels, finetuning_task=args.task_name)
+    tokenizer = tokenizer_class.from_pretrained(args.tokenizer_name if args.tokenizer_name else args.model_name_or_path, cache_dir=args.cache_dir, do_lower_case=args.do_lower_case)
+    model = model_class.from_pretrained(args.model_name_or_path, cache_dir=args.cache_dir, from_tf=bool('.ckpt' in args.model_name_or_path), config=config)
 
     if args.local_rank == 0:
         torch.distributed.barrier()  # Make sure only the first process in distributed training will download model & vocab
