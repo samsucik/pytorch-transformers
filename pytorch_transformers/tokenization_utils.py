@@ -286,7 +286,7 @@ class PreTrainedTokenizer(object):
         proxies = kwargs.pop('proxies', None)
 
         s3_models = list(cls.max_model_input_sizes.keys())
-        logger.error("s3_models", s3_models)
+        logger.error(s3_models)
         vocab_files = {}
         init_configuration = {}
         if pretrained_model_name_or_path in s3_models:
@@ -351,7 +351,11 @@ class PreTrainedTokenizer(object):
                 if file_path is None:
                     resolved_vocab_files[file_id] = None
                 else:
-                    logger.error("file_path", file_path, cache_dir, force_download, proxies)
+                    logger.error("file_path")
+                    logger.error(file_path)
+                    logger.error(cache_dir)
+                    logger.error(force_download)
+                    logger.error(proxies)
                     resolved_vocab_files[file_id] = cached_path(file_path, cache_dir=cache_dir, force_download=force_download, proxies=proxies)
         except EnvironmentError as e:
             if pretrained_model_name_or_path in s3_models:

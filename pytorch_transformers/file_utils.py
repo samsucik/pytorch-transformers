@@ -146,6 +146,7 @@ def cached_path(url_or_filename, cache_dir=None, force_download=False, proxies=N
 
     if parsed.scheme in ('http', 'https', 's3'):
         # URL, so get it from the cache (downloading if necessary)
+        print("getting from cache", url_or_filename, cache_dir)
         return get_from_cache(url_or_filename, cache_dir=cache_dir, force_download=force_download, proxies=proxies)
     elif os.path.exists(url_or_filename):
         # File, and it exists.
@@ -253,6 +254,8 @@ def get_from_cache(url, cache_dir=None, force_download=False, proxies=None):
 
     # get cache path to put the file
     cache_path = os.path.join(cache_dir, filename)
+
+    print(cache_path)
 
     # If we don't have a connection (etag is None) and can't identify the file
     # try to get the last downloaded one
