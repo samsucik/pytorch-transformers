@@ -164,6 +164,13 @@ def main():
     parser.add_argument("--toy_mode", action='store_true', help="Toy mode for development.")
     parser.add_argument("--rich_eval", action='store_true', help="Rich evaluation (more metrics + mistake reporting).")
 
+    # parser.add_argument("--generate_logits", type=parse_str2bool, default=False, const=True, nargs='?',
+    #                     help="Instead of distillation, just generate teacher's logits for given data.")
+    parser.add_argument("--augmentation_data_file", default=None, type=str,
+                        help="File with augmentation sentences to be scored. If not provided, only the training set of the GLUE task will be considered.")
+    parser.add_argument("--augmentation_type", default=None, type=str,
+                        help="Type of transfer set augmentation (None, gpt-2 or rule-based).")
+
     args = parser.parse_args()
    
     ## ARGS ##
@@ -187,6 +194,16 @@ def main():
         with open(os.path.join(args.output_dir, 'parameters.json'), 'w') as f:
             json.dump(vars(args), f, indent=4)
 
+
+    ## GLUE TASK ##
+    args.task_name = args.task_name.lower()
+    if args.task_name not in processors:
+        raise ValueError("Task not found: %s" % (args.task_name))
+    args.model_name_or_path = args.teacher_name
+    args.max_seq_length = args.max_position_embeddings
+    args.model_type = "bert"
+    args.output_mode = output_modes[args.task_name]
+
     # Setup CUDA, GPU & distributed training
     if args.local_rank == -1 or args.no_cuda:
         device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
@@ -196,8 +213,30 @@ def main():
         device = torch.device("cuda", args.local_rank)
     args.device = device
 
-    logger.info("DEVICE: {}".format(args.device))
-    logger.info("N_GPU: {}".format(args.n_gpu))
+    def generate_logits(teacher, input_ids, input_masks, segment_ids, label_ids):
+        logger.info("Creating soft labels using the teacher model...")
+        dataset = TensorDataset(input_ids, input_masks, segment_ids, label_ids)
+        B = 128
+        dataloader = DataLoader(dataset, batch_size=B, shuffle=False)
+        all_logits = None
+        for i, batch in enumerate(dataloader):
+            if args.n_gpu > 0:
+                batch = tuple(t.to(f'cuda:{args.local_rank}') for t in batch)
+            batch = tuple(t.to(args.device) for t in batch)
+            inputs = {'input_ids':      batch[0],
+                      'attention_mask': batch[1],
+                      'token_type_ids': batch[2],
+                      'labels':         batch[3]}
+            with torch.no_grad():
+                (_, logits,) = teacher(**inputs)
+            if all_logits is None:
+                all_logits = logits
+            else:
+                all_logits = torch.cat([all_logits, logits], dim=0)
+            logger.info("{}/{}".format(i*B, len(dataloader)*B))
+            #if i >= 0:
+            #    break
+        return all_logits
 
     ## TOKENIZER ##
     tokenizer = BertTokenizer.from_pretrained(args.teacher_name, do_lower_case=args.do_lower_case)
@@ -207,6 +246,88 @@ def main():
         special_tok_ids[tok_name] = tokenizer.all_special_ids[idx]
     logger.info(f'Special tokens {special_tok_ids}')
     args.special_tok_ids = special_tok_ids
+
+    cached_dataset_file = os.path.join(args.data_dir, 'cached_train_msl{}_{}_{}'.format(
+        str(args.max_seq_length), 
+        "original" if args.augmentation_type is None else args.augmentation_type,
+        "logits" if not args.use_hard_labels else "hard"))
+    if os.path.exists(cached_dataset_file):
+        logger.info("Loading dataset from cached file %s", cached_dataset_file)
+        d = torch.load(cached_dataset_file, map_location=args.device)
+        train_dataset = TensorDataset(d["input_ids"], d["input_mask"], d["segment_ids"], d["label_ids"], d["logits"])
+    else:
+        ## TEACHER ##
+        teacher = BertForSequenceClassification.from_pretrained(args.teacher_name) # take outputs[1] for the logits
+        if args.n_gpu > 0:
+            teacher.to(f'cuda:{args.local_rank}')
+        logger.info(f'Teacher loaded from {args.teacher_name}.')
+        
+        if args.augmentation_type is not None:
+            cached_augmentation_set_file = os.path.join(args.data_dir, 'cached_augmentation_msl{}_{}_{}'.format(
+                str(args.max_seq_length), 
+                args.augmentation_type,
+                "logits" if not args.use_hard_labels else "hard"))
+            if os.path.exists(cached_augmentation_set_file):
+                d = torch.load(cached_augmentation_set_file, map_location=args.device)
+                cached_augmentation_set = TensorDataset(d["input_ids"], d["input_mask"], d["segment_ids"], d["label_ids"], d["logits"])
+            else:
+
+        train_dataset = load_and_cache_examples(args, args.task_name, tokenizer, 
+                                                process_labels=generate_logits, evaluate=False)
+        if args.local_rank in [-1, 0]:
+            logger.info("Saving dataset into cached file %s", cached_dataset_file)
+            dataset_to_save = {}
+            for i, name in enumerate(["input_ids", "input_mask", "segment_ids", "label_ids", "soft_label_ids"]):
+                for sample in train_dataset:
+                    print(sample[i].shape)
+                features = [sample[i] for sample in train_dataset]
+                dataset_to_save[name] = torch.stack(features)
+            torch.save(dataset_to_save, cached_dataset_file)
+
+    if args.generate_logits:
+        # input
+        if args.sentences_to_score is not None:
+            sentences = processors["sampled_gpt-2"].get_examples(args.sentences_to_score)
+        else:
+            sentences = processors[args.task_name].get_train_examples(args.data_dir)
+
+        features = convert_examples_to_features(sentences, label_list=[0], max_seq_length=args.max_seq_length, 
+            tokenizer=tokenizer, output_mode="classification",
+            cls_token_at_end=False,
+            cls_token=tokenizer.cls_token,
+            cls_token_segment_id=0,
+            sep_token=tokenizer.sep_token,
+            sep_token_extra=False,
+            pad_on_left=False,
+            pad_token=tokenizer.convert_tokens_to_ids([tokenizer.pad_token])[0],
+            pad_token_segment_id=0,
+            show_examples=False
+        )
+        all_input_ids = torch.tensor([f.input_ids for f in features], dtype=torch.long)
+        all_input_mask = torch.tensor([f.input_mask for f in features], dtype=torch.long)
+        all_segment_ids = torch.tensor([f.segment_ids for f in features], dtype=torch.long)
+        all_label_ids = torch.tensor([f.label_id for f in features], dtype=torch.long)
+       
+        # teacher
+        teacher = BertForSequenceClassification.from_pretrained(args.teacher_name) # take outputs[1] for the logits
+        if args.n_gpu > 0:
+            teacher.to(f'cuda:{args.local_rank}')
+        logger.info(f'Teacher loaded from {args.teacher_name}.')
+       
+        all_soft_label_ids = generate_logits(all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
+
+        logger.info("Saving features into cached file %s", cached_features_file)
+        torch.save(all_soft_label_ids, os.path.join(args.data_dir, "logits-{}".format("train" if args.sentences_to_score is None else "sampled")))
+
+        logger.info("Saving dataset into cached file %s", cached_dataset_file)
+        dataset_to_save = {}
+        for i, name in enumerate(["input_ids", "input_mask", "segment_ids", "label_ids", "soft_label_ids"]):
+            for sample in train_dataset:
+                print(sample[i].shape)
+            features = [sample[i] for sample in train_dataset]
+            dataset_to_save[name] = torch.stack(features)
+        torch.save(dataset_to_save, cached_dataset_file)
+        return
 
     ## STUDENT ##
     student_config = BertConfig(
@@ -244,16 +365,6 @@ def main():
     logger.info(f'Student loaded.')
 
 
-    ## GLUE TASK ##
-    args.task_name = args.task_name.lower()
-    if args.task_name not in processors:
-        raise ValueError("Task not found: %s" % (args.task_name))
-    args.model_name_or_path = args.teacher_name
-    args.max_seq_length = args.max_position_embeddings
-    args.model_type = "bert"
-    args.output_mode = output_modes[args.task_name]
-
-
     cached_dataset_file = os.path.join(args.data_dir, 'cached_train_{}_{}_{}_with-soft-labels'.format(
         list(filter(None, args.model_name_or_path.split('/'))).pop(),
         str(args.max_seq_length), str(args.task_name)))
@@ -269,31 +380,6 @@ def main():
         if args.n_gpu > 0:
             teacher.to(f'cuda:{args.local_rank}')
         logger.info(f'Teacher loaded from {args.teacher_name}.')
-    
-        def generate_logits(input_ids, input_masks, segment_ids, label_ids):
-            logger.info("Creating soft labels using the teacher model...")
-            dataset = TensorDataset(input_ids, input_masks, segment_ids, label_ids)
-            B = 128
-            dataloader = DataLoader(dataset, batch_size=B, shuffle=False)
-            all_logits = None
-            for i, batch in enumerate(dataloader):
-                if args.n_gpu > 0:
-                    batch = tuple(t.to(f'cuda:{args.local_rank}') for t in batch)
-                batch = tuple(t.to(args.device) for t in batch)
-                inputs = {'input_ids':      batch[0],
-                          'attention_mask': batch[1],
-                          'token_type_ids': batch[2],
-                          'labels':         batch[3]}
-                with torch.no_grad():
-                    (_, logits,) = teacher(**inputs)
-                if all_logits is None:
-                    all_logits = logits
-                else:
-                    all_logits = torch.cat([all_logits, logits], dim=0)
-                logger.info("{}/{}".format(i*B, len(dataloader)*B))
-                #if i >= 0:
-                #    break
-            return all_logits
 
         train_dataset = load_and_cache_examples(args, args.task_name, tokenizer, 
                                                 process_labels=generate_logits, evaluate=False)

@@ -387,6 +387,21 @@ class WnliProcessor(DataProcessor):
                 InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
         return examples
 
+class GPT2Processor(DataProcessor):
+    def get_examples(self, data_file="sampled_sentences"):
+        return self._create_examples(
+            self._read_tsv(data_file), "train")
+
+    def _create_examples(self, lines, set_type):
+        """Creates examples for the training and dev sets."""
+        examples = []
+        for (i, line) in enumerate(lines):
+            guid = "%s-%s" % (set_type, i)
+            text_a = line[0][2:]
+            label = 0
+            examples.append(
+                InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
+        return examples
 
 def convert_examples_to_features(examples, label_list, max_seq_length,
                                  tokenizer, output_mode,
@@ -595,6 +610,7 @@ processors = {
     "qnli": QnliProcessor,
     "rte": RteProcessor,
     "wnli": WnliProcessor,
+    "sampled_gpt-2": GPT2Processor
 }
 
 output_modes = {
