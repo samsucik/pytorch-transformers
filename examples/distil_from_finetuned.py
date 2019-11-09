@@ -270,7 +270,6 @@ def main():
     logger.info(f'Special tokens {special_tok_ids}')
     args.special_tok_ids = special_tok_ids
     teacher = None
-    print(tokenizer)
 
     ## CACHED DATASET ##
     cached_dataset_file = os.path.join(args.data_dir, 'cached_train{}_msl{}_{}'.format(
@@ -291,8 +290,7 @@ def main():
         ## ORIGINAL DATASET ##
         cached_original_set_file = os.path.join(args.data_dir, 'cached_train_msl{}'.format(str(args.max_seq_length)))
         if os.path.exists(cached_original_set_file):
-            d = torch.load(cached_original_set_file, map_location=args.device)
-            cached_original_set = TensorDataset(d["input_ids"], d["attention_mask"], d["token_type_ids"], d["labels"], d["logits"])
+            cached_original_set = torch.load(cached_original_set_file, map_location=args.device)
         else:
             processor = processors[args.task_name]()
             original_sentences = processor.get_train_examples(args.data_dir)
@@ -308,12 +306,11 @@ def main():
             cached_augmentation_set_file = os.path.join(args.data_dir, 'cached_augmentation-{}_msl{}'.format(
                 args.augmentation_type,
                 str(args.max_seq_length)))
-
             if os.path.exists(cached_augmentation_set_file):
-                d = torch.load(cached_augmentation_set_file, map_location=args.device)
-                cached_augmentation_set = TensorDataset(d["input_ids"], d["attention_mask"], d["token_type_ids"], d["labels"], d["logits"])
+                cached_augmentation_set = torch.load(cached_augmentation_set_file, map_location=args.device)
             else:
-                augmentation_sentences = processors["sampled_{}".format(args.augmentation_type)].get_examples(args.augmentation_data_file)
+                processor = processors["sampled_{}".format(args.augmentation_type)]()
+                augmentation_sentences = processor.get_examples(args.augmentation_data_file)
                 augmentation_features = create_features(augmentation_sentences, args)
                 augmentation_logits = add_logits(teacher, tokenizer, augmentation_features, args)
                 augmentation_features["logits"] = augmentation_logits
@@ -321,72 +318,13 @@ def main():
                 logger.info("Saving augmentation dataset with logits into cached file {}".format(cached_augmentation_set_file))
                 torch.save(cached_augmentation_set, cached_augmentation_set_file)
 
-        augmented_dataset = [torch.stack([cached_original_set[name], cached_augmentation_set[name]]) \
-                             for name in ["input_ids", "attention_mask", "token_type_ids", "labels", "logits"]]
+        augmented_dataset = {name: torch.cat([cached_original_set[name], cached_augmentation_set[name]]) \
+                             for name in ["input_ids", "attention_mask", "token_type_ids", "labels", "logits"]}
         logger.info("Saving augmented original dataset with logits into cached file {}".format(cached_dataset_file))
         torch.save(augmented_dataset, cached_dataset_file)
-        train_dataset = TensorDataset(*augmented_dataset)
-        
-        # take care of original data
-
-    """
-        train_dataset = load_and_cache_examples(args, args.task_name, tokenizer, 
-                                                process_labels=generate_logits, evaluate=False)
-        if args.local_rank in [-1, 0]:
-            logger.info("Saving dataset into cached file %s", cached_dataset_file)
-            dataset_to_save = {}
-            for i, name in enumerate(["input_ids", "input_mask", "segment_ids", "label_ids", "soft_label_ids"]):
-                for sample in train_dataset:
-                    print(sample[i].shape)
-                features = [sample[i] for sample in train_dataset]
-                dataset_to_save[name] = torch.stack(features)
-            torch.save(dataset_to_save, cached_dataset_file)
-
-    if args.generate_logits:
-        # input
-        if args.sentences_to_score is not None:
-            sentences = processors["sampled_gpt-2"].get_examples(args.sentences_to_score)
-        else:
-            sentences = processors[args.task_name].get_train_examples(args.data_dir)
-
-        features = convert_examples_to_features(sentences, label_list=[0], max_seq_length=args.max_seq_length, 
-            tokenizer=tokenizer, output_mode="classification",
-            cls_token_at_end=False,
-            cls_token=tokenizer.cls_token,
-            cls_token_segment_id=0,
-            sep_token=tokenizer.sep_token,
-            sep_token_extra=False,
-            pad_on_left=False,
-            pad_token=tokenizer.convert_tokens_to_ids([tokenizer.pad_token])[0],
-            pad_token_segment_id=0,
-            show_examples=False
-        )
-        all_input_ids = torch.tensor([f.input_ids for f in features], dtype=torch.long)
-        all_input_mask = torch.tensor([f.input_mask for f in features], dtype=torch.long)
-        all_segment_ids = torch.tensor([f.segment_ids for f in features], dtype=torch.long)
-        all_label_ids = torch.tensor([f.label_id for f in features], dtype=torch.long)
-       
-        # teacher
-        teacher = BertForSequenceClassification.from_pretrained(args.teacher_name) # take outputs[1] for the logits
-        if args.n_gpu > 0:
-            teacher.to(f'cuda:{args.local_rank}')
-        logger.info(f'Teacher loaded from {args.teacher_name}.')
-       
-        all_soft_label_ids = generate_logits(all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
-
-        logger.info("Saving features into cached file %s", cached_features_file)
-        torch.save(all_soft_label_ids, os.path.join(args.data_dir, "logits-{}".format("train" if args.sentences_to_score is None else "sampled")))
-
-        logger.info("Saving dataset into cached file %s", cached_dataset_file)
-        dataset_to_save = {}
-        for i, name in enumerate(["input_ids", "input_mask", "segment_ids", "label_ids", "soft_label_ids"]):
-            for sample in train_dataset:
-                print(sample[i].shape)
-            features = [sample[i] for sample in train_dataset]
-            dataset_to_save[name] = torch.stack(features)
-        torch.save(dataset_to_save, cached_dataset_file)
-        return
-    """
+        train_dataset = TensorDataset(*[augmented_dataset[name] for name in ["input_ids", "attention_mask", "token_type_ids", "labels", "logits"]])
+    
+    exit(0)
 
     ## STUDENT ##
     student_config = BertConfig(
