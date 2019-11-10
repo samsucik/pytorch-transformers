@@ -22,6 +22,7 @@ import json
 import shutil
 import numpy as np
 import torch
+import torch.nn as nn
 
 from torch.utils.data import DataLoader, RandomSampler, TensorDataset
 
@@ -229,17 +230,17 @@ def main():
             show_examples=False
         )
         dataset = {
-            "input_ids": torch.tensor([f.input_ids for f in features], dtype=torch.long),
-            "attention_mask": torch.tensor([f.input_mask for f in features], dtype=torch.long),
-            "token_type_ids": torch.tensor([f.segment_ids for f in features], dtype=torch.long),
-            "labels": torch.tensor([f.label_id for f in features], dtype=torch.long)
+            "input_ids": torch.tensor([f.input_ids for f in features], dtype=torch.long).to(args.device),
+            "attention_mask": torch.tensor([f.input_mask for f in features], dtype=torch.long).to(args.device),
+            "token_type_ids": torch.tensor([f.segment_ids for f in features], dtype=torch.long).to(args.device),
+            "labels": torch.tensor([f.label_id for f in features], dtype=torch.long).to(args.device)
         }
         return dataset
 
     def add_logits(teacher, tokenizer, features, args):
         logger.info("Creating soft labels using the teacher model...")
         dataset = TensorDataset(features["input_ids"], features["attention_mask"], features["token_type_ids"], features["labels"])
-        B = 128
+        B = 2048 # use 128 on 6GB GPUs, or 512*N_GPUS on 12GB GPUs
         dataloader = DataLoader(dataset, batch_size=B, shuffle=False)
         all_logits = None
         for i, batch in enumerate(dataloader):
@@ -273,7 +274,7 @@ def main():
 
     ## CACHED DATASET ##
     cached_dataset_file = os.path.join(args.data_dir, 'cached_train{}_msl{}_{}'.format(
-        "" if args.augmentation_type is None else ("augmented-" + args.augmentation_type),
+        "" if args.augmentation_type is None else ("_augmented-" + args.augmentation_type),
         str(args.max_seq_length), 
         "logits" if not args.use_hard_labels else "hard"))
     if os.path.exists(cached_dataset_file):
@@ -288,9 +289,10 @@ def main():
         logger.info(f'Teacher loaded from {args.teacher_name}.')
 
         ## ORIGINAL DATASET ##
-        cached_original_set_file = os.path.join(args.data_dir, 'cached_train_msl{}'.format(str(args.max_seq_length)))
+        cached_original_set_file = os.path.join(args.data_dir, 'cached_train_msl{}_logits'.format(str(args.max_seq_length)))
         if os.path.exists(cached_original_set_file):
             cached_original_set = torch.load(cached_original_set_file, map_location=args.device)
+            logger.info("Loading original dataset from cached file {}".format(cached_original_set_file))
         else:
             processor = processors[args.task_name]()
             original_sentences = processor.get_train_examples(args.data_dir)
@@ -303,21 +305,23 @@ def main():
 
         ## AUGMENTATION DATASET ##
         if args.augmentation_type is not None:
-            cached_augmentation_set_file = os.path.join(args.data_dir, 'cached_augmentation-{}_msl{}'.format(
+            cached_augmentation_set_file = os.path.join(args.data_dir, 'cached_augmentation-{}_msl{}_logits'.format(
                 args.augmentation_type,
                 str(args.max_seq_length)))
             if os.path.exists(cached_augmentation_set_file):
+                logger.info("Loading augmentation dataset from cached file {}".format(cached_augmentation_set_file))
                 cached_augmentation_set = torch.load(cached_augmentation_set_file, map_location=args.device)
             else:
                 processor = processors["sampled_{}".format(args.augmentation_type)]()
                 augmentation_sentences = processor.get_examples(args.augmentation_data_file)
                 augmentation_features = create_features(augmentation_sentences, args)
-                augmentation_logits = add_logits(teacher, tokenizer, augmentation_features, args)
+                augmentation_logits = add_logits(nn.DataParallel(teacher).cuda(), tokenizer, augmentation_features, args)
                 augmentation_features["logits"] = augmentation_logits
                 cached_augmentation_set = augmentation_features
                 logger.info("Saving augmentation dataset with logits into cached file {}".format(cached_augmentation_set_file))
                 torch.save(cached_augmentation_set, cached_augmentation_set_file)
 
+        print(args.device)
         augmented_dataset = {name: torch.cat([cached_original_set[name], cached_augmentation_set[name]]) \
                              for name in ["input_ids", "attention_mask", "token_type_ids", "labels", "logits"]}
         logger.info("Saving augmented original dataset with logits into cached file {}".format(cached_dataset_file))

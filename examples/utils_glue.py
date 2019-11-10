@@ -393,14 +393,12 @@ class GPT2Processor(DataProcessor):
             self._read_tsv(data_file), "train")
 
     def _create_examples(self, lines, set_type):
-        """Creates examples for the training and dev sets."""
         examples = []
-        for (i, line) in enumerate(lines[:10]):
-            guid = "%s-%s" % (set_type, i)
+        for (i, line) in enumerate(lines):
+            guid = "aug-gpt2-%s" % (i)
             text_a = line[0][2:]
-            label = 0
             examples.append(
-                InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
+                InputExample(guid=guid, text_a=text_a, text_b=None, label=0))
         return examples
 
 def convert_examples_to_features(examples, label_list, max_seq_length,
