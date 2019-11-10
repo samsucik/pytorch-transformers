@@ -258,8 +258,6 @@ def main():
             else:
                 all_logits = torch.cat([all_logits, logits], dim=0)
             logger.info("{}/{}".format(i*B, len(dataloader)*B))
-            #if i >= 0:
-            #    break
         return all_logits
 
     ## TOKENIZER ##
@@ -327,8 +325,10 @@ def main():
         logger.info("Saving augmented original dataset with logits into cached file {}".format(cached_dataset_file))
         torch.save(augmented_dataset, cached_dataset_file)
         train_dataset = TensorDataset(*[augmented_dataset[name] for name in ["input_ids", "attention_mask", "token_type_ids", "labels", "logits"]])
-    
-    exit(0)
+
+    train_sampler = RandomSampler(train_dataset)
+    train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.batch_size)
+    logger.info(f'Data loader created.')
 
     ## STUDENT ##
     student_config = BertConfig(
@@ -365,46 +365,11 @@ def main():
         student.to(f'cuda:{args.local_rank}')
     logger.info(f'Student loaded.')
 
-
-    cached_dataset_file = os.path.join(args.data_dir, 'cached_train_{}_{}_{}_with-soft-labels'.format(
-        list(filter(None, args.model_name_or_path.split('/'))).pop(),
-        str(args.max_seq_length), str(args.task_name)))
-    if os.path.exists(cached_dataset_file):
-        logger.info("Loading dataset from cached file %s", cached_dataset_file)
-        d = torch.load(cached_dataset_file, map_location=args.device)
-        train_dataset = TensorDataset(d["input_ids"], d["input_mask"], d["segment_ids"], d["label_ids"], d["soft_label_ids"])
-    else:
-        logger.info("Creating dataset from scratch using the teacher")
-        
-        ## TEACHER ##
-        teacher = BertForSequenceClassification.from_pretrained(args.teacher_name) # take outputs[1] for the logits
-        if args.n_gpu > 0:
-            teacher.to(f'cuda:{args.local_rank}')
-        logger.info(f'Teacher loaded from {args.teacher_name}.')
-
-        train_dataset = load_and_cache_examples(args, args.task_name, tokenizer, 
-                                                process_labels=generate_logits, evaluate=False)
-        if args.local_rank in [-1, 0]:
-            logger.info("Saving dataset into cached file %s", cached_dataset_file)
-            dataset_to_save = {}
-            for i, name in enumerate(["input_ids", "input_mask", "segment_ids", "label_ids", "soft_label_ids"]):
-                for sample in train_dataset:
-                    print(sample[i].shape)
-                features = [sample[i] for sample in train_dataset]
-                dataset_to_save[name] = torch.stack(features)
-            torch.save(dataset_to_save, cached_dataset_file)
-
-    train_sampler = RandomSampler(train_dataset)
-    train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.batch_size)
-    logger.info(f'Data loader created.')
-
     ## DISTILLER ##
     torch.cuda.empty_cache()
     distiller = Distiller(params=args,
                           dataloader=train_dataloader,
-                          # token_probs=token_probs,
                           student=student,
-                          # teacher=teacher,
                           tokenizer=tokenizer)
     distiller.train()
     logger.info("Let's go get some drinks.")
