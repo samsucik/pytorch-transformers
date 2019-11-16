@@ -92,7 +92,7 @@ class Distiller:
 
         logger.info('--- Initializing model optimizer')
         assert params.gradient_accumulation_steps >= 1
-        num_train_optimization_steps = int(self.num_steps_epoch / params.gradient_accumulation_steps * params.n_epoch) + 1
+        num_train_optimization_steps = int(self.num_steps_epoch / params.gradient_accumulation_steps * params.n_epochs) + 1
 
         no_decay = ['bias', 'LayerNorm.weight']
         optimizer_grouped_parameters = [
@@ -149,8 +149,8 @@ class Distiller:
         self.student.train()
         # self.teacher.eval()
         do_stop = False
-        for epoch_number in range(self.params.n_epoch):
-            logger.info(f'--- Starting epoch {self.epoch}/{self.params.n_epoch-1}')
+        for epoch_number in range(self.params.n_epochs):
+            logger.info(f'--- Starting epoch {self.epoch}/{self.params.n_epochs-1}')
             # if self.multi_gpu:
             #     torch.distributed.barrier()
 
@@ -175,14 +175,14 @@ class Distiller:
                     break
 
             if do_stop:
-                logger.info(f'--- Ending epoch {self.epoch}/{self.params.n_epoch-1} early due to max_steps')
+                logger.info(f'--- Ending epoch {self.epoch}/{self.params.n_epochs-1} early due to max_steps')
                 self.end_epoch()
                 break
 
             self.data_iterator.close()
             self.data_iterator = tqdm(self.dataloader, desc="Iteration", disable=self.params.local_rank not in [-1, 0])
             
-            logger.info(f'--- Ending epoch {self.epoch}/{self.params.n_epoch-1}')
+            logger.info(f'--- Ending epoch {self.epoch}/{self.params.n_epochs-1}')
             self.end_epoch()
 
         logger.info(f'Save very last checkpoint as `pytorch_model.bin`.')

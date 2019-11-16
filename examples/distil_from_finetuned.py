@@ -115,7 +115,7 @@ def main():
     # parser.add_argument("--restrict_ce_to_mask", action='store_true',
     #                     help="If true, compute the distilation loss only the [MLM] prediction distribution.")
 
-    parser.add_argument("--n_epoch", type=int, default=3,
+    parser.add_argument("--n_epochs", type=int, default=3,
                         help="Number of pass on the whole dataset.")
     parser.add_argument("--batch_size", type=int, default=5,
                         help="Batch size (for each process).")
