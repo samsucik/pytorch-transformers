@@ -171,6 +171,8 @@ def main():
                         help="File with augmentation sentences to be scored. If not provided, only the training set of the GLUE task will be considered.")
     parser.add_argument("--augmentation_type", default=None, type=str,
                         help="Type of transfer set augmentation (None, gpt-2 or rule-based).")
+    parser.add_argument("--embeddings_from_teacher", type=parse_str2bool, default=False, const=True, nargs='?',
+                        help="Take embeddings from the fine-tuned teacher, dimensionality reduced to fit the student.")
 
     args = parser.parse_args()
    
@@ -348,6 +350,25 @@ def main():
         student = BertForSequenceClassification.from_pretrained(args.from_pretrained, config=student_config)
     else:
         student = BertForSequenceClassification(student_config)
+
+        if args.embeddings_from_teacher:
+            embeddings_file = os.path.join(args.teacher_name, "embeddings_h{}.pt".format(args.dim))
+            if not os.path.exists(embeddings_file):
+                teacher_state_dict = torch.load(os.path.join(args.teacher_name, "pytorch_model.bin"), map_location=args.device)
+                embedding_weights = teacher_state_dict["bert.embeddings.word_embeddings.weight"]
+                w_mean = torch.mean(embedding_weights, 0)
+                embedding_weights = embedding_weights - w_mean.expand_as(embedding_weights)
+                U, S, V = torch.svd(torch.t(embedding_weights))
+                embeddings_reduced = torch.mm(embedding_weights, U[:,:args.dim])
+                embeddings_state_dict = {"bert.embeddings.word_embeddings.weight": embeddings_reduced}
+                torch.save(embeddings_state_dict, embeddings_file)
+            else:
+                embeddings_state_dict = torch.load(embeddings_file)
+
+            param_keys = student.load_state_dict(embeddings_state_dict, strict=False)
+            loaded_params = [p for p in student.state_dict() if p not in param_keys[0]]
+            logger.info("Loaded the embedding weights: {}".format(loaded_params))
+
     # if args.from_pretrained_weights is not None:
     #     assert os.path.isfile(args.from_pretrained_weights)
     #     assert os.path.isfile(args.from_pretrained_config)
