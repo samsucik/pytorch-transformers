@@ -354,7 +354,7 @@ def main():
         if args.embeddings_from_teacher:
             embeddings_file = os.path.join(args.teacher_name, "embeddings_h{}.pt".format(args.dim))
             if not os.path.exists(embeddings_file):
-                teacher_state_dict = torch.load(os.path.join(args.teacher_name, "pytorch_model.bin"), map_location=args.device)
+                teacher_state_dict = torch.load(os.path.join(args.teacher_name, "pytorch_model.bin"), map_location=torch.device("cpu"))
                 embedding_weights = teacher_state_dict["bert.embeddings.word_embeddings.weight"]
                 w_mean = torch.mean(embedding_weights, 0)
                 embedding_weights = embedding_weights - w_mean.expand_as(embedding_weights)
@@ -363,7 +363,7 @@ def main():
                 embeddings_state_dict = {"bert.embeddings.word_embeddings.weight": embeddings_reduced}
                 torch.save(embeddings_state_dict, embeddings_file)
             else:
-                embeddings_state_dict = torch.load(embeddings_file)
+                embeddings_state_dict = torch.load(embeddings_file, map_location=args.device)
 
             param_keys = student.load_state_dict(embeddings_state_dict, strict=False)
             loaded_params = [p for p in student.state_dict() if p not in param_keys[0]]
