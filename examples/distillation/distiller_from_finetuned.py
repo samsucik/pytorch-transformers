@@ -29,7 +29,7 @@ from datetime import datetime
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.optim import AdamW
+from torch.optim import AdamW, Adadelta
 
 from pytorch_transformers import WarmupLinearSchedule, WarmupConstantSchedule
 
@@ -101,10 +101,20 @@ class Distiller:
         ]
         logger.info("------ Number of trainable parameters (student): %i" % sum([p.numel() for p in self.student.parameters() if p.requires_grad]))
         logger.info("------ Number of parameters (student): %i" % sum([p.numel() for p in self.student.parameters()]))
-        self.optimizer = AdamW(optimizer_grouped_parameters,
-                               lr=params.learning_rate,
-                               eps=params.adam_epsilon,
-                               betas=(0.9, 0.98))
+        
+        if params.optimizer == "adam":
+            self.optimizer = AdamW(optimizer_grouped_parameters,
+                                   lr=params.learning_rate,
+                                   eps=params.adam_epsilon,
+                                   betas=(0.9, 0.98))
+            logger.info("------ Using Adam optimizer.")
+        elif params.optimizer == "adadelta":
+            self.optimizer = Adadelta(optimizer_grouped_parameters,
+                                    lr=params.learning_rate, 
+                                    rho=0.95)
+            logger.info("------ Using ADADELTA optimizer.")
+        else:
+            raise ValueError("Unrecognised optimizer option: {}".format(params.optimizer))
 
         warmup_steps = math.ceil(num_train_optimization_steps * params.warmup_prop)
         # self.scheduler = WarmupLinearSchedule(self.optimizer, warmup_steps, t_total=num_train_optimization_steps)

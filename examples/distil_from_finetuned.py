@@ -128,6 +128,8 @@ def main():
     parser.add_argument("--group_by_size", action='store_false',
                         help="If true, group sequences that have similar length into the same batch. Default is true.")
 
+    parser.add_argument("--optimizer", default="adam", type=str,
+                        help="Optimizer to use (one of ['adam', 'adadelta']).")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=50,
                         help="Gradient accumulation for larger training batches.")
     parser.add_argument("--max_steps", default=-1, type=int,
@@ -135,7 +137,7 @@ def main():
     parser.add_argument("--warmup_prop", default=0.05, type=float,
                         help="Linear warmup proportion.")
     parser.add_argument("--weight_decay", default=0.0, type=float,
-                        help="Weight deay if we apply some.")
+                        help="Weight decay if we apply some.")
     parser.add_argument("--learning_rate", default=5e-4, type=float,
                         help="The initial learning rate for Adam.")
     parser.add_argument("--adam_epsilon", default=1e-6, type=float,
