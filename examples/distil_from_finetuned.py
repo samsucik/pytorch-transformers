@@ -352,6 +352,7 @@ def main():
         student = BertForSequenceClassification(student_config)
 
         if args.embeddings_from_teacher:
+            logger.info("Initialising student embedding parameters from the teacher...")
             embeddings_file = os.path.join(args.teacher_name, "embeddings_h{}.pt".format(args.dim))
             if not os.path.exists(embeddings_file):
                 teacher_state_dict = torch.load(os.path.join(args.teacher_name, "pytorch_model.bin"), map_location=torch.device("cpu"))
@@ -367,7 +368,9 @@ def main():
 
             param_keys = student.load_state_dict(embeddings_state_dict, strict=False)
             loaded_params = [p for p in student.state_dict() if p not in param_keys[0]]
-            logger.info("Loaded the embedding weights: {}".format(loaded_params))
+            num_loaded_params = sum([student.state_dict()[p].numel() for p in loaded_params])
+            num_all_params = sum([p.numel() for n, p in student.state_dict().items()])
+            logger.info("Loaded {} parameters (out of total {}) into: {}".format(num_loaded_params, num_all_params, loaded_params))
 
     # if args.from_pretrained_weights is not None:
     #     assert os.path.isfile(args.from_pretrained_weights)
