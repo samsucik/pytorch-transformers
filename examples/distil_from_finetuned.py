@@ -264,6 +264,46 @@ def main():
             logger.info("{}/{}".format(i*B, len(dataloader)*B))
         return all_logits
 
+    def compress_embeddings_raunak(args, embeddings_tensor: torch.Tensor, new_dim=256, D1=5, D2=0):
+        from sklearn.decomposition import PCA
+        embeddings = embeddings_tensor.numpy()
+        old_dim = embeddings.shape[1]
+        
+        # preprocessing
+        pca1 =  PCA(n_components=old_dim)
+        z = embeddings - np.mean(embeddings, axis=0)
+        pca1.fit(z)
+        U1 = pca1.components_
+        z1 = []
+        for i, x in enumerate(z):
+            for u in U1[0:D1]:
+                x = x - np.dot(u.T, x) * u 
+            z1.append(x)
+        z1 = np.asarray(z1)
+
+        # PCA dimensionality reduction
+        pca2 =  PCA(n_components=new_dim)
+        z2 = z1 - np.mean(z1, axis=0)
+        z2 = pca2.fit_transform(z2)
+        pca3 = PCA(n_components=new_dim)
+        z3 = z2 - np.mean(z2, axis=0)
+        pca3.fit(z3)
+        U3 = pca3.components_
+
+        # postprocessing
+        if D3 > 0:
+            U3 = pca3.components_
+            z4 = []
+            for i, x in enumerate(z3):
+                for u in U3[0:D3]:
+                    x = x - np.dot(u.T, x) * u 
+                z4.append(x)
+            embeddings_new = np.asarray(z4)
+        else:
+            embeddings_new = z3
+
+        return torch.from_numpy(embeddings_new).float().to(args.device)
+
     ## TOKENIZER ##
     tokenizer = BertTokenizer.from_pretrained(args.teacher_name, do_lower_case=args.do_lower_case)
     special_tok_ids = {}
@@ -359,10 +399,7 @@ def main():
             if not os.path.exists(embeddings_file):
                 teacher_state_dict = torch.load(os.path.join(args.teacher_name, "pytorch_model.bin"), map_location=torch.device("cpu"))
                 embedding_weights = teacher_state_dict["bert.embeddings.word_embeddings.weight"]
-                w_mean = torch.mean(embedding_weights, 0)
-                embedding_weights = embedding_weights - w_mean.expand_as(embedding_weights)
-                U, S, V = torch.svd(torch.t(embedding_weights))
-                embeddings_reduced = torch.mm(embedding_weights, U[:,:args.dim])
+                embeddings_reduced = compress_embeddings_raunak(args, embedding_weights, new_dim=args.dim)
                 embeddings_state_dict = {"bert.embeddings.word_embeddings.weight": embeddings_reduced}
                 torch.save(embeddings_state_dict, embeddings_file)
             else:
