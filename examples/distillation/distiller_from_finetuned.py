@@ -24,6 +24,7 @@ from tqdm import tqdm
 import numpy as np
 import socket
 from datetime import datetime
+from types import SimpleNamespace
 
 import torch
 import torch.nn as nn
@@ -33,15 +34,17 @@ from torch.optim import AdamW, Adadelta
 from pytorch_transformers import WarmupLinearSchedule, WarmupConstantSchedule, ConstantLRSchedule
 
 from examples.distillation.utils import logger
-from examples.distillation.dataset import Dataset
+# from examples.distillation.dataset import Dataset
 from examples.run_glue import set_seed, evaluate
 
 class Distiller:
     def __init__(self,
-                 params: dict,
-                 dataloader, # type Dataset (if BERT) or torchtext.data.Dataset (if LSTM)
+                 params,
+                 dataloader_train, # type Dataset (if BERT) or torchtext.data.Dataset (if LSTM)
+                 dataloader_dev, # type Dataset (if BERT) or torchtext.data.Dataset (if LSTM)
                  student: nn.Module,
                  tokenizer: nn.Module=None, # must be provided iff distilling into BERT
+                 evaluate_fn=None,
                  student_type="BERT" # one of BERT, LSTM
                  ):
 
@@ -52,8 +55,10 @@ class Distiller:
         self.output_dir = params.output_dir
         self.student = student
         self.tokenizer = tokenizer
-        self.dataloader = dataloader
-        self.num_steps_epoch = len(self.dataloader)
+        self.dataloader_train = dataloader_train
+        self.dataloader_dev = dataloader_dev
+        self.evaluate_fn = evaluate_fn
+        self.num_steps_epoch = len(self.dataloader_train)
         self.get_data_iterator()
         self.temperature = params.temperature
         assert self.temperature > 0.
@@ -66,7 +71,7 @@ class Distiller:
         assert self.alpha_ce + self.alpha_mse > 0.
         self.ce_loss_fct = nn.KLDivLoss(reduction='batchmean')
         self.mse_loss_fct = nn.MSELoss(reduction='sum') # 'batchmean' achieved as 'sum' + manual normalising
-        self.ce_simple_loss_fct = nn.CrossEntropy(reduction='mean')
+        self.ce_simple_loss_fct = nn.CrossEntropyLoss(reduction='mean')
 
         self.n_epochs = params.n_epochs
         self.epoch = 0 # epoch counter; TODO set to non-zero when resuming distillation from checkpoint
@@ -115,7 +120,7 @@ class Distiller:
             # self.scheduler = WarmupLinearSchedule(self.optimizer, warmup_steps, t_total=num_train_optimization_steps)
             self.scheduler = WarmupConstantSchedule(self.optimizer, warmup_steps)
         else: # no LR annealing for LSTM student
-            self.schedule = ConstantLRSchedule(self.optimizer)
+            self.scheduler = ConstantLRSchedule(self.optimizer)
 
         logger.info('--- Initializing Tensorboard')
         current_time = datetime.now().strftime('%b%d_%H-%M-%S')
@@ -131,8 +136,8 @@ class Distiller:
         """
         logger.info("--- Initializing Data Iterator")
         set_seed(self.params)
-        if self.student_type == "LSTM": self.dataloader.init_epoch()
-        self.data_iterator = tqdm(self.dataloader, desc="Iteration", total=(self.params.max_steps % self.num_steps_epoch 
+        if self.student_type == "LSTM": self.dataloader_train.init_epoch()
+        self.data_iterator = tqdm(self.dataloader_train, desc="Iteration", total=(self.params.max_steps % self.num_steps_epoch 
             if self.params.max_steps > 0 else None))
 
     def train(self):
@@ -150,9 +155,13 @@ class Distiller:
 
                 if self.n_total_iter % self.params.log_interval == 0 and self.params.evaluate_during_training:
                     # TODO: change evaluate() to work with LSTM too
-                    results = evaluate(self.params, self.student, self.tokenizer, prefix="e{}s{}".format(epoch_number, step))
+                    # results = evaluate(self.params, self.student, self.tokenizer, prefix="e{}s{}".format(epoch_number, step))
+                    if self.student_type == "LSTM":
+                        eval_params = SimpleNamespace(dataset=self.dataloader_dev, model=self.student, task_name=self.params.task_name)
+                    results = self.evaluate_fn(eval_params)
                     for key, value in results.items():
                         if key == "conf_mtrx": continue
+                        logger.info("Dev {}: {}".format(key, value))
                         self.tensorboard.add_scalar('eval_{}'.format(key), value, global_step=self.n_total_iter)
 
                 if self.params.max_steps > 0 and self.n_total_iter + step > self.params.max_steps:
@@ -166,8 +175,8 @@ class Distiller:
                 break
 
             self.data_iterator.close()
-            if self.student_type == "LSTM": self.dataloader.init_epoch()
-            self.data_iterator = tqdm(self.dataloader, desc="Iteration")
+            if self.student_type == "LSTM": self.dataloader_train.init_epoch()
+            self.data_iterator = tqdm(self.dataloader_train, desc="Iteration")
             
             logger.info("--- Ending epoch {}/{}".format(self.epoch, self.n_epochs-1))
             self.end_epoch()
@@ -195,7 +204,7 @@ class Distiller:
             # TODO: convert batch to this device?
             logits = self.student(batch.sentence)
             labels = batch.label
-            n_sequences = batch.sentence.size(0)
+            n_sequences = batch.sentence[1].size(0) # batch.sentence is: (sents, sent_lens)
 
         if self.use_hard_labels:
             loss = self.ce_simple_loss_fct(logits, labels)
@@ -293,7 +302,12 @@ class Distiller:
             state_dict = mdl_to_save.state_dict()
             torch.save(state_dict, os.path.join(self.output_dir, checkpoint_name))
         else:
-            mdl_to_save.save_pretrained(self.output_dir)
+            if self.student_type == "BERT":
+                mdl_to_save.save_pretrained(self.output_dir)
+            else:
+                state_dict = mdl_to_save.state_dict()
+                torch.save(state_dict, os.path.join(self.output_dir, "pytorch_model.bin"))
 
         # Good practice: save your training arguments together with the trained model
         torch.save(self.params, os.path.join(self.output_dir, 'training_args.bin'))
+        
