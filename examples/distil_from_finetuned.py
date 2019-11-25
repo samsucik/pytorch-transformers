@@ -20,11 +20,12 @@ import argparse
 import pickle
 import json
 import shutil
+from types import SimpleNamespace
+
 import numpy as np
 import torch
 import torch.nn as nn
-
-from torch.utils.data import DataLoader, RandomSampler, TensorDataset
+from torch.utils.data import DataLoader, RandomSampler, TensorDataset, SequentialSampler
 
 from pytorch_transformers import BertTokenizer, BertForSequenceClassification, BertConfig
 # from pytorch_transformers import DistilBertForMaskedLM, DistilBertConfig
@@ -33,7 +34,7 @@ from distillation.distiller_from_finetuned import Distiller
 from distillation.utils import git_log, logger, init_gpu_params, set_seed, parse_str2bool
 from distillation.dataset import Dataset
 
-from utils_glue import processors, output_modes, convert_examples_to_features
+from utils_glue import processors, output_modes, convert_examples_to_features, compute_metrics
 from run_glue import load_and_cache_examples
 
 
@@ -83,10 +84,6 @@ def main():
 
     parser.add_argument("--from_pretrained", default="none", type=str,
                         help="Load pretrained student initialization checkpoint (the config params must agree with the checkpoint).")
-    # parser.add_argument("--from_pretrained_weights", default=None, type=str,
-    #                     help="Load student initialization checkpoint.")
-    # parser.add_argument("--from_pretrained_config", default=None, type=str,
-    #                     help="Load student initialization architecture config.")
     parser.add_argument("--teacher_name", default="bert-base-uncased", type=str,
                         help="The teacher model.")
 
@@ -96,24 +93,8 @@ def main():
                         help="Temperature for the softmax temperature.")
     parser.add_argument("--alpha_ce", default=1.0, type=float,
                         help="Linear weight for the distillation loss. Must be >=0.")
-    # parser.add_argument("--alpha_mlm", default=0.5, type=float,
-    #                     help="Linear weight for the MLM loss. Must be >=0.")
     parser.add_argument("--alpha_mse", default=0.0, type=float,
                         help="Linear weight of the MSE loss. Must be >=0.")
-    parser.add_argument("--alpha_cos", default=0.0, type=float,
-                        help="Linear weight of the cosine embedding loss. Must be >=0.")
-    # parser.add_argument("--mlm_mask_prop", default=0.15, type=float,
-    #                     help="Proportion of tokens for which we need to make a prediction.")
-    # parser.add_argument("--word_mask", default=0.8, type=float,
-    #                     help="Proportion of tokens to mask out.")
-    # parser.add_argument("--word_keep", default=0.1, type=float,
-    #                     help="Proportion of tokens to keep.")
-    # parser.add_argument("--word_rand", default=0.1, type=float,
-    #                     help="Proportion of tokens to randomly replace.")
-    # parser.add_argument("--mlm_smoothing", default=0.7, type=float,
-    #                     help="Smoothing parameter to emphasize more rare tokens (see XLM, similar to word2vec).")
-    # parser.add_argument("--restrict_ce_to_mask", action='store_true',
-    #                     help="If true, compute the distilation loss only the [MLM] prediction distribution.")
 
     parser.add_argument("--n_epochs", type=int, default=3,
                         help="Number of pass on the whole dataset.")
@@ -157,7 +138,7 @@ def main():
     parser.add_argument('--log_examples', action='store_false',
                         help="Show input examples on the command line during evaluation. Enabled by default.")
     parser.add_argument("--evaluate_during_training", action='store_true',
-                        help="Rul evaluation during training at each logging step.")
+                        help="Run evaluation during training at each logging step.")
     parser.add_argument("--checkpoint_interval", type=int, default=-1,
                         help="Every how many epochs is a checkpoint saved at the end of the epoch.")
     parser.add_argument("--no_cuda", type=parse_str2bool, default=False, const=True, nargs='?',
@@ -196,7 +177,6 @@ def main():
         logger.info(f'Param: {args}')
         with open(os.path.join(args.output_dir, 'parameters.json'), 'w') as f:
             json.dump(vars(args), f, indent=4)
-
 
     ## GLUE TASK ##
     args.task_name = args.task_name.lower()
@@ -312,7 +292,36 @@ def main():
     args.special_tok_ids = special_tok_ids
     teacher = None
 
-    ## CACHED DATASET ##
+    if args.evaluate_during_training:
+        eval_dataset = load_and_cache_examples(args, args.task_name, tokenizer, evaluate=True)
+        eval_sampler = SequentialSampler(eval_dataset)
+        eval_dataset = DataLoader(eval_dataset, sampler=eval_sampler, batch_size=args.per_gpu_eval_batch_size)
+        def evaluate_fn(params: SimpleNamespace):
+            """
+            params contains:
+            - dataset
+            - model
+            - task_name
+            """
+            params.model.eval()
+            preds, targets = None, None
+            for batch in params.dataset:
+                with torch.no_grad():
+                    logits = params.model(input_ids=batch[0], attention_mask=batch[1], token_type_ids=batch[2])[0]
+                labels_pred = logits.max(1)[1]
+                if preds is None:
+                    preds = labels_pred.detach().cpu().numpy()
+                    targets = batch[3].detach().cpu().numpy()
+                else:
+                    preds = np.append(preds, labels_pred.detach().cpu().numpy(), axis=0)
+                    targets = np.append(targets, batch[3].detach().cpu().numpy(), axis=0)
+            result = compute_metrics(params.task_name, preds, targets)
+            return result
+    else:
+        eval_dataset = None
+        evaluate_fn = None
+
+    ## CACHED TRAINING DATASET ##
     cached_dataset_file = os.path.join(args.data_dir, 'cached_train{}_msl{}_{}'.format(
         "" if args.augmentation_type is None else ("_augmented-" + args.augmentation_type),
         str(args.max_seq_length), 
@@ -369,7 +378,7 @@ def main():
         train_dataset = TensorDataset(*[augmented_dataset[name] for name in ["input_ids", "attention_mask", "token_type_ids", "labels", "logits"]])
 
     train_sampler = RandomSampler(train_dataset)
-    train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.batch_size)
+    train_dataset = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.batch_size)
     logger.info(f'Data loader created.')
 
     ## STUDENT ##
@@ -409,19 +418,6 @@ def main():
             num_all_params = sum([p.numel() for n, p in student.state_dict().items()])
             logger.info("Loaded {} parameters (out of total {}) into: {}".format(num_loaded_params, num_all_params, loaded_params))
 
-    # if args.from_pretrained_weights is not None:
-    #     assert os.path.isfile(args.from_pretrained_weights)
-    #     assert os.path.isfile(args.from_pretrained_config)
-    #     logger.info(f'Loading pretrained weights from {args.from_pretrained_weights}')
-    #     logger.info(f'Loading pretrained config from {args.from_pretrained_config}')
-    #     stu_architecture_config = DistilBertConfig.from_json_file(args.from_pretrained_config)
-    #     stu_architecture_config.output_hidden_states = True
-    #     student = DistilBertForMaskedLM.from_pretrained(args.from_pretrained_weights,
-    #                                                     config=stu_architecture_config)
-    # else:
-    #     args.vocab_size_or_config_json_file = args.vocab_size
-    #     stu_architecture_config = DistilBertConfig(**vars(args), output_hidden_states=True)
-    #     student = DistilBertForMaskedLM(stu_architecture_config)
     if args.n_gpu > 0:
         student.to(f'cuda:{args.local_rank}')
     logger.info(f'Student loaded.')
@@ -429,9 +425,11 @@ def main():
     ## DISTILLER ##
     torch.cuda.empty_cache()
     distiller = Distiller(params=args,
-                          dataloader=train_dataloader,
+                          dataset_train=train_dataset,
+                          dataset_eval=eval_dataset,
                           student=student,
-                          tokenizer=tokenizer)
+                          evaluate_fn=evaluate_fn,
+                          student_type="BERT")
     distiller.train()
     logger.info("Let's go get some drinks.")
 

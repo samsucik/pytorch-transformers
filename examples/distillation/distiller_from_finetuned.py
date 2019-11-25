@@ -34,16 +34,14 @@ from torch.optim import AdamW, Adadelta
 from pytorch_transformers import WarmupLinearSchedule, WarmupConstantSchedule, ConstantLRSchedule
 
 from examples.distillation.utils import logger
-# from examples.distillation.dataset import Dataset
 from examples.run_glue import set_seed, evaluate
 
 class Distiller:
     def __init__(self,
                  params,
-                 dataloader_train, # type Dataset (if BERT) or torchtext.data.Dataset (if LSTM)
-                 dataloader_dev, # type Dataset (if BERT) or torchtext.data.Dataset (if LSTM)
+                 dataset_train, # type Dataset (if BERT) or torchtext.data.Dataset (if LSTM)
+                 dataset_eval, # type Dataset (if BERT) or torchtext.data.Dataset (if LSTM)
                  student: nn.Module,
-                 tokenizer: nn.Module=None, # must be provided iff distilling into BERT
                  evaluate_fn=None,
                  student_type="BERT" # one of BERT, LSTM
                  ):
@@ -54,11 +52,10 @@ class Distiller:
         self.params = params
         self.output_dir = params.output_dir
         self.student = student
-        self.tokenizer = tokenizer
-        self.dataloader_train = dataloader_train
-        self.dataloader_dev = dataloader_dev
+        self.dataset_train = dataset_train
+        self.dataset_eval = dataset_eval
         self.evaluate_fn = evaluate_fn
-        self.num_steps_epoch = len(self.dataloader_train)
+        self.num_steps_epoch = len(self.dataset_train)
         self.get_data_iterator()
         self.temperature = params.temperature
         assert self.temperature > 0.
@@ -128,7 +125,6 @@ class Distiller:
         self.tensorboard = SummaryWriter(log_dir=logdir, flush_secs=60)
         self.tensorboard.add_text(tag='config', text_string=str(self.params), global_step=0)
 
-    # TODO: change to support torchtext.data.Iterator (used by LSTM)
     def get_data_iterator(self):
         """
         Initialize the data iterator.
@@ -136,8 +132,8 @@ class Distiller:
         """
         logger.info("--- Initializing Data Iterator")
         set_seed(self.params)
-        if self.student_type == "LSTM": self.dataloader_train.init_epoch()
-        self.data_iterator = tqdm(self.dataloader_train, desc="Iteration", total=(self.params.max_steps % self.num_steps_epoch 
+        if self.student_type == "LSTM": self.dataset_train.init_epoch()
+        self.data_iterator = tqdm(self.dataset_train, desc="Iteration", total=(self.params.max_steps % self.num_steps_epoch 
             if self.params.max_steps > 0 else None))
 
     def train(self):
@@ -154,10 +150,7 @@ class Distiller:
                 self.step(batch)
 
                 if self.n_total_iter % self.params.log_interval == 0 and self.params.evaluate_during_training:
-                    # TODO: change evaluate() to work with LSTM too
-                    # results = evaluate(self.params, self.student, self.tokenizer, prefix="e{}s{}".format(epoch_number, step))
-                    if self.student_type == "LSTM":
-                        eval_params = SimpleNamespace(dataset=self.dataloader_dev, model=self.student, task_name=self.params.task_name)
+                    eval_params = SimpleNamespace(dataset=self.dataset_eval, model=self.student, task_name=self.params.task_name)
                     results = self.evaluate_fn(eval_params)
                     self.student.train()
                     for key, value in results.items():
@@ -166,7 +159,7 @@ class Distiller:
                         self.tensorboard.add_scalar('eval_{}'.format(key), value, global_step=self.n_total_iter)
 
                 if self.params.max_steps > 0 and self.n_total_iter + step > self.params.max_steps:
-                    if self.student_type == "BERT": self.data_iterator.close()
+                    self.data_iterator.close()
                     do_stop = True
                     break
 
@@ -176,8 +169,8 @@ class Distiller:
                 break
 
             self.data_iterator.close()
-            if self.student_type == "LSTM": self.dataloader_train.init_epoch()
-            self.data_iterator = tqdm(self.dataloader_train, desc="Iteration")
+            if self.student_type == "LSTM": self.dataset_train.init_epoch()
+            self.data_iterator = tqdm(self.dataset_train, desc="Iteration")
             
             logger.info("--- Ending epoch {}/{}".format(self.epoch, self.n_epochs-1))
             self.end_epoch()
