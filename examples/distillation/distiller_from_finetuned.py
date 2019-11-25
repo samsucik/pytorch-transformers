@@ -159,6 +159,7 @@ class Distiller:
                     if self.student_type == "LSTM":
                         eval_params = SimpleNamespace(dataset=self.dataloader_dev, model=self.student, task_name=self.params.task_name)
                     results = self.evaluate_fn(eval_params)
+                    self.student.train()
                     for key, value in results.items():
                         if key == "conf_mtrx": continue
                         logger.info("Dev {}: {}".format(key, value))
