@@ -139,9 +139,7 @@ def main():
     parser.add_argument("--weight_decay", default=0.0, type=float,
                         help="Weight decay if we apply some.")
     parser.add_argument("--learning_rate", default=5e-4, type=float,
-                        help="The initial learning rate for Adam.")
-    parser.add_argument("--adam_epsilon", default=1e-6, type=float,
-                        help="Epsilon for Adam optimizer.")
+                        help="The initial learning rate for Adam/Adadelta.")
     parser.add_argument("--max_grad_norm", default=5.0, type=float,
                         help="Max gradient norm.")
     parser.add_argument("--initializer_range", default=0.02, type=float,
