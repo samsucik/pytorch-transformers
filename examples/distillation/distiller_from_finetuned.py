@@ -16,6 +16,7 @@
     adapted in part from Facebook, Inc XLM model (https://github.com/facebookresearch/XLM)
 """
 import os
+import re
 import math
 import psutil
 import time
@@ -32,7 +33,6 @@ import torch.nn.functional as F
 from torch.optim import AdamW, Adadelta
 
 from pytorch_transformers import WarmupLinearSchedule, WarmupConstantSchedule, ConstantLRSchedule
-
 from examples.distillation.utils import logger
 from examples.run_glue import set_seed, evaluate
 
@@ -77,6 +77,8 @@ class Distiller:
         self.n_sequences_epoch = 0
         self.total_loss_epoch = 0
         self.last_loss = 0
+        self.best_dev_score = -100000
+        self.best_dev_score_epoch = 0.0 # can be epoch fractions because evaluation is done many times per epoch
         self.last_log_time = 0
 
         logger.info('--- Initializing model optimizer')
@@ -151,12 +153,22 @@ class Distiller:
 
                 if self.n_total_iter % self.params.log_interval == 0 and self.params.evaluate_during_training:
                     eval_params = SimpleNamespace(dataset=self.dataset_eval, model=self.student, task_name=self.params.task_name)
-                    results = self.evaluate_fn(eval_params)
+                    results = self.evaluate_fn(eval_params)            
+                    dev_score_tuple = [(name, score) for name, score in results.items() if name != "additional"][0]
+                    dev_score = dev_score_tuple[1]
+                    self.tensorboard.add_scalar('eval_{}'.format(dev_score_tuple[0]), dev_score, global_step=self.n_total_iter)
+                    logger.info("Dev {}: {}".format(dev_score_tuple[0], dev_score))
+                    if "additional" in results:
+                        for name, val in results["additional"]:
+                            logger.info("Dev {}: {}".format(name, val))
+
+                    # save best checkpoint
+                    if self.best_dev_score < dev_score:
+                        self.best_dev_score_epoch = self.n_total_iter/self.num_steps_epoch
+                        self.best_dev_score = dev_score
+                        self.save_checkpoint("e{:.2f}_{}:{:.3f}".format(self.best_dev_score_epoch, dev_score_tuple[0], dev_score), kind="best")
+                    
                     self.student.train()
-                    for key, value in results.items():
-                        if key == "conf_mtrx": continue
-                        logger.info("Dev {}: {}".format(key, value))
-                        self.tensorboard.add_scalar('eval_{}'.format(key), value, global_step=self.n_total_iter)
 
                 if self.params.max_steps > 0 and self.n_total_iter + step > self.params.max_steps:
                     self.data_iterator.close()
@@ -286,10 +298,21 @@ class Distiller:
         self.n_iter = 0
         self.total_loss_epoch = 0
 
-    def save_checkpoint(self, checkpoint_name=None):
+    def save_checkpoint(self, checkpoint_name=None, kind=None):
         """
         Save the current state. Only by the master process.
         """
+
+        # delete all previous best checkpoints
+        if kind == "best":
+            checkpoint_name = ("best_" + checkpoint_name) if checkpoint_name is not None else "best"
+            previous_bests = [f for f in os.listdir(self.output_dir) if re.match(r'.*best.*\.bin', f)]
+            logger.info("Deleting previous best checkpoint(s): {}".format(previous_bests))
+            for f in previous_bests: os.remove(os.path.join(self.output_dir, f))
+
+        if checkpoint_name is not None:
+            checkpoint_name = "pytorch_model_" + checkpoint_name + ".bin"
+
         mdl_to_save = self.student.module if hasattr(self.student, 'module') else self.student
         if checkpoint_name is not None:
             mdl_to_save.config.save_pretrained(self.output_dir)

@@ -592,8 +592,10 @@ def compute_metrics(task_name, preds, labels, additional_metrics=[]):
     else:
         raise KeyError(task_name)
 
+    if len(additional_metrics):
+        results["additional"] = {}
     if "conf_mtrx" in additional_metrics:
-        results["conf_mtrx"] = confusion_matrix(y_true=labels, y_pred=preds)
+        results["additional"]["conf_mtrx"] = confusion_matrix(y_true=labels, y_pred=preds)
 
     return results
 

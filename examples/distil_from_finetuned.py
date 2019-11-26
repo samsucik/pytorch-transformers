@@ -28,7 +28,6 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, RandomSampler, TensorDataset, SequentialSampler
 
 from pytorch_transformers import BertTokenizer, BertForSequenceClassification, BertConfig
-# from pytorch_transformers import DistilBertForMaskedLM, DistilBertConfig
 
 from distillation.distiller_from_finetuned import Distiller
 from distillation.utils import git_log, logger, init_gpu_params, set_seed, parse_str2bool
