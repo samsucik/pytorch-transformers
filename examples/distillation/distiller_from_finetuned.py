@@ -315,7 +315,7 @@ class Distiller:
 
         mdl_to_save = self.student.module if hasattr(self.student, 'module') else self.student
         if checkpoint_name is not None:
-            mdl_to_save.config.save_pretrained(self.output_dir)
+            if self.student_type == "BERT": mdl_to_save.config.save_pretrained(self.output_dir)
             state_dict = mdl_to_save.state_dict()
             torch.save(state_dict, os.path.join(self.output_dir, checkpoint_name))
         else:
