@@ -140,9 +140,24 @@ class BertEmbeddings(nn.Module):
     """
     def __init__(self, config):
         super(BertEmbeddings, self).__init__()
-        self.word_embeddings = nn.Embedding(config.vocab_size, config.hidden_size, padding_idx=0)
-        self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.hidden_size)
-        self.token_type_embeddings = nn.Embedding(config.type_vocab_size, config.hidden_size)
+
+        # If desired, construct the embeddings with a dimensionality different from the hidden size.
+        # This way, a smaller model can be initialised with trained embeddings from a big one,
+        # then the embeddings are dimensionality-reduced using a linear layer (to match the hidden size).
+        if hasattr(config, "embedding_dimensionality") and config.embedding_dimensionality is not None \
+            and config.embedding_dimensionality != config.hidden_size:
+            self.has_embedding_dimensionality_reduction_layer = True
+            embedding_dimensionality = config.embedding_dimensionality
+        else:
+            self.has_embedding_dimensionality_reduction_layer = False
+            embedding_dimensionality = config.hidden_size
+
+        self.word_embeddings = nn.Embedding(config.vocab_size, embedding_dimensionality, padding_idx=0)
+        self.position_embeddings = nn.Embedding(config.max_position_embeddings, embedding_dimensionality)
+        self.token_type_embeddings = nn.Embedding(config.type_vocab_size, embedding_dimensionality)
+
+        if self.has_embedding_dimensionality_reduction_layer:
+            self.embedding_dimensionality_reduction = nn.Linear(embedding_dimensionality, config.hidden_size)
 
         # self.LayerNorm is not snake-cased to stick with TensorFlow model variable name and be able to load
         # any TensorFlow checkpoint file
@@ -162,6 +177,8 @@ class BertEmbeddings(nn.Module):
         token_type_embeddings = self.token_type_embeddings(token_type_ids)
 
         embeddings = words_embeddings + position_embeddings + token_type_embeddings
+        if self.has_embedding_dimensionality_reduction_layer:
+            embeddings = self.embedding_dimensionality_reduction(embeddings)
         embeddings = self.LayerNorm(embeddings)
         embeddings = self.dropout(embeddings)
         return embeddings

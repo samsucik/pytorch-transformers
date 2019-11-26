@@ -40,24 +40,16 @@ from run_glue import load_and_cache_examples
 def main():
     parser = argparse.ArgumentParser(description="Training")
 
-    ## Required parameters
     parser.add_argument("--data_dir", default=None, type=str, required=True,
                         help="The input data dir. Should contain the .tsv files (or other data files) for the task.")
     parser.add_argument("--output_dir", type=str, required=True,
                         help="The output directory (log, checkpoints, parameters, etc.)")
-    # parser.add_argument("--data_file", type=str, required=True,
-    #                     help="The binarized file (tokenized + tokens_to_ids) and grouped by sequence.")
-    # parser.add_argument("--token_counts", type=str, required=True,
-    #                     help="The token counts in the data_file for MLM.")
     parser.add_argument("--force", action='store_true',
                         help="Overwrite output_dir if it already exists.")
     parser.add_argument("--task_name", default=None, type=str, required=True,
                         help="The name of the task to train selected in the list: " + ", ".join(processors.keys()))
     parser.add_argument("--do_lower_case", action='store_true',
                         help="Set this flag if you are using an uncased model.")
-    # parser.add_argument("--output_dir", default=None, type=str, required=True,
-    #                     help="The output directory where the model predictions and checkpoints will be written.")
-
     parser.add_argument("--vocab_size", default=30522, type=int,
                         help="The vocabulary size.")
     parser.add_argument("--max_position_embeddings", default=512, type=int,
@@ -101,10 +93,6 @@ def main():
                         help="Batch size (for each process).")
     parser.add_argument("--per_gpu_eval_batch_size", default=8, type=int,
                         help="Batch size per GPU/CPU for evaluation.")
-    # parser.add_argument("--tokens_per_batch", type=int, default=-1,
-    #                     help="If specified, modify the batches so that they have approximately this number of tokens.")
-    # parser.add_argument("--shuffle", action='store_false',
-    #                     help="If true, shuffle the sequence order. Default is true.")
     parser.add_argument("--group_by_size", action='store_false',
                         help="If true, group sequences that have similar length into the same batch. Default is true.")
 
@@ -145,14 +133,18 @@ def main():
     parser.add_argument("--toy_mode", action='store_true', help="Toy mode for development.")
     parser.add_argument("--rich_eval", action='store_true', help="Rich evaluation (more metrics + mistake reporting).")
 
-    # parser.add_argument("--generate_logits", type=parse_str2bool, default=False, const=True, nargs='?',
-    #                     help="Instead of distillation, just generate teacher's logits for given data.")
     parser.add_argument("--augmentation_data_file", default=None, type=str,
                         help="File with augmentation sentences to be scored. If not provided, only the training set of the GLUE task will be considered.")
     parser.add_argument("--augmentation_type", default=None, type=str,
                         help="Type of transfer set augmentation (None, gpt-2 or rule-based).")
+    
     parser.add_argument("--embeddings_from_teacher", type=parse_str2bool, default=False, const=True, nargs='?',
                         help="Take embeddings from the fine-tuned teacher, dimensionality reduced to fit the student.")
+    parser.add_argument("--embedding_dimensionality", type=int, default=None,
+                        help="Dimensionality of trained embeddings to be used (if embeddings_from_teacher set to True).")
+    parser.add_argument("--embedding_dimensionality_reduction_technique", type=str, default='linear',
+                        help="How to bring embeddings from original dimensionality down. 'linear' adds a linear layer into the model, \
+                        'pca' does improved PCA (Raunak, 2017) before loading the embedding weights into the model.")
 
     args = parser.parse_args()
    
@@ -241,7 +233,7 @@ def main():
             logger.info("{}/{}".format(i*B, len(dataloader)*B))
         return all_logits
 
-    def compress_embeddings_raunak(args, embeddings_tensor: torch.Tensor, new_dim=256, D1=5, D2=0):
+    def compress_embeddings_raunak(args, embeddings_tensor: torch.Tensor, new_dim=256, D1=5, D3=0):
         from sklearn.decomposition import PCA
         embeddings = embeddings_tensor.numpy()
         old_dim = embeddings.shape[1]
@@ -320,6 +312,7 @@ def main():
         eval_dataset = None
         evaluate_fn = None
 
+    # """
     ## CACHED TRAINING DATASET ##
     cached_dataset_file = os.path.join(args.data_dir, 'cached_train{}_msl{}_{}'.format(
         "" if args.augmentation_type is None else ("_augmented-" + args.augmentation_type),
@@ -379,7 +372,7 @@ def main():
     train_sampler = RandomSampler(train_dataset)
     train_dataset = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.batch_size)
     logger.info(f'Data loader created.')
-
+    # """
     ## STUDENT ##
     student_config = BertConfig(
         vocab_size_or_config_json_file=args.vocab_size,
@@ -391,7 +384,10 @@ def main():
         attention_probs_dropout_prob=args.attention_dropout,
         max_position_embeddings=args.max_position_embeddings,
         hidden_act=args.activation,
-        initializer_range=0.02)
+        initializer_range=0.02,
+        embedding_dimensionality=(args.embedding_dimensionality if args.embeddings_from_teacher and \
+                                  args.embedding_dimensionality_reduction_technique == "linear" else None)
+        )
     
     if args.from_pretrained != "none":
         logger.info("Loading pre-trained student from: {}".format(args.from_pretrained))
@@ -401,22 +397,33 @@ def main():
 
         if args.embeddings_from_teacher:
             logger.info("Initialising student embedding parameters from the teacher...")
-            embeddings_file = os.path.join(args.teacher_name, "embeddings_h{}.pt".format(args.dim))
+            embeddings_file = os.path.join(args.teacher_name, "embeddings_teacher_h{}.pt".format(
+                args.dim if args.embedding_dimensionality_reduction_technique != "linear" else args.embedding_dimensionality))
             if not os.path.exists(embeddings_file):
                 teacher_state_dict = torch.load(os.path.join(args.teacher_name, "pytorch_model.bin"), map_location=torch.device("cpu"))
-                embedding_weights = teacher_state_dict["bert.embeddings.word_embeddings.weight"]
-                embeddings_reduced = compress_embeddings_raunak(args, embedding_weights, new_dim=args.dim)
-                embeddings_state_dict = {"bert.embeddings.word_embeddings.weight": embeddings_reduced}
-                torch.save(embeddings_state_dict, embeddings_file)
-            else:
-                embeddings_state_dict = torch.load(embeddings_file, map_location=args.device)
+                embedding_param_names = ["bert.embeddings.word_embeddings.weight", 
+                                         "bert.embeddings.position_embeddings.weight", 
+                                         "bert.embeddings.token_type_embeddings.weight"]
+                embedding_state_dict = {}
+                for embedding_param_name in embedding_param_names:
+                    embedding_weights = teacher_state_dict[embedding_param_name]
+                    if "position" in embedding_param_name: # take only as many position embeddings as required
+                        embedding_weights = embedding_weights[..., :args.max_position_embeddings, :]
+                    if args.embedding_dimensionality_reduction_technique == "pca":
+                        embedding_weights = compress_embeddings_raunak(args, embedding_weights, new_dim=args.dim)
+                    else:
+                        assert args.embedding_dimensionality == embedding_weights.shape[-1]
+                    embedding_state_dict[embedding_param_name] = embedding_weights
 
-            param_keys = student.load_state_dict(embeddings_state_dict, strict=False)
+                torch.save(embedding_state_dict, embeddings_file)
+            else:
+                embedding_state_dict = torch.load(embeddings_file, map_location=args.device)
+
+            param_keys = student.load_state_dict(embedding_state_dict, strict=False)
             loaded_params = [p for p in student.state_dict() if p not in param_keys[0]]
             num_loaded_params = sum([student.state_dict()[p].numel() for p in loaded_params])
             num_all_params = sum([p.numel() for n, p in student.state_dict().items()])
             logger.info("Loaded {} parameters (out of total {}) into: {}".format(num_loaded_params, num_all_params, loaded_params))
-
     if args.n_gpu > 0:
         student.to(f'cuda:{args.local_rank}')
     logger.info(f'Student loaded.')
