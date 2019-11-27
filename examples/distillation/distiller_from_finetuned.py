@@ -152,7 +152,8 @@ class Distiller:
                 self.step(batch)
 
                 if self.n_total_iter % self.params.log_interval == 0 and self.params.evaluate_during_training:
-                    eval_params = SimpleNamespace(dataset=self.dataset_eval, model=self.student, task_name=self.params.task_name)
+                    eval_params = SimpleNamespace(dataset=self.dataset_eval, model=self.student, \
+                                                  task_name=self.params.task_name, device=self.params.device)
                     results = self.evaluate_fn(eval_params)            
                     dev_score_tuple = [(name, score) for name, score in results.items() if name != "additional"][0]
                     dev_score = dev_score_tuple[1]

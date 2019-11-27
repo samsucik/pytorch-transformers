@@ -293,10 +293,12 @@ def main():
             - dataset
             - model
             - task_name
+            - device
             """
             params.model.eval()
             preds, targets = None, None
             for batch in params.dataset:
+                batch = tuple(t.to(params.device) for t in batch)
                 with torch.no_grad():
                     logits = params.model(input_ids=batch[0], attention_mask=batch[1], token_type_ids=batch[2])[0]
                 labels_pred = logits.max(1)[1]
