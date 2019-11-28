@@ -32,7 +32,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import AdamW, Adadelta
 
-from pytorch_transformers import WarmupLinearSchedule, WarmupConstantSchedule, ConstantLRSchedule
+from pytorch_transformers import WarmupLinearSchedule, WarmupConstantSchedule
 from examples.distillation.utils import logger
 from examples.run_glue import set_seed, evaluate
 
@@ -114,12 +114,8 @@ class Distiller:
         else:
             raise ValueError("Unrecognised optimizer option: {}".format(params.optimizer))
 
-        if self.student_type == "BERT":
-            warmup_steps = math.ceil(num_train_optimization_steps * params.warmup_prop)
-            # self.scheduler = WarmupLinearSchedule(self.optimizer, warmup_steps, t_total=num_train_optimization_steps)
-            self.scheduler = WarmupConstantSchedule(self.optimizer, warmup_steps)
-        else: # no LR annealing for LSTM student
-            self.scheduler = ConstantLRSchedule(self.optimizer)
+        warmup_steps = math.ceil(num_train_optimization_steps * params.warmup_prop)
+        self.scheduler = WarmupConstantSchedule(self.optimizer, warmup_steps)
 
         logger.info('--- Initializing Tensorboard')
         current_time = datetime.now().strftime('%b%d_%H-%M-%S')
