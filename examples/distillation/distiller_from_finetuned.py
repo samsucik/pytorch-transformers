@@ -100,8 +100,10 @@ class Distiller:
             student_params = [p for p in self.student.parameters() if p.requires_grad]
             self.parameters_to_clip = self.student.non_embedding_params()
 
-        logger.info("------ Number of trainable parameters: {}".format(
+        logger.info("------ Number of trainable parameters (all): {}".format(
             sum([p.numel() for p in self.student.parameters() if p.requires_grad])))
+        logger.info("------ Number of trainable parameters (embeddings): {}".format(
+            sum([p.numel() for n, p in self.student.named_parameters() if (p.requires_grad and "embed" in n)])))
         logger.info("------ Number of all parameters: {}".format(
             sum([p.numel() for p in self.student.parameters()])))
         

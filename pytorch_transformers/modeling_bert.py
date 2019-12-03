@@ -153,7 +153,7 @@ class BertEmbeddings(nn.Module):
             embedding_dimensionality = config.hidden_size
 
         self.word_embeddings = nn.Embedding(config.vocab_size, embedding_dimensionality, padding_idx=0)
-        self.position_embeddings = nn.Embedding(config.max_position_embeddings, embedding_dimensionality)
+        self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.hidden_size)
         self.token_type_embeddings = nn.Embedding(config.type_vocab_size, embedding_dimensionality)
 
         if self.has_embedding_dimensionality_reduction_layer:
@@ -176,9 +176,10 @@ class BertEmbeddings(nn.Module):
         position_embeddings = self.position_embeddings(position_ids)
         token_type_embeddings = self.token_type_embeddings(token_type_ids)
 
-        embeddings = words_embeddings + position_embeddings + token_type_embeddings
+        embeddings = words_embeddings + token_type_embeddings
         if self.has_embedding_dimensionality_reduction_layer:
             embeddings = self.embedding_dimensionality_reduction(embeddings)
+        embeddings = embeddings + position_embeddings
         embeddings = self.LayerNorm(embeddings)
         embeddings = self.dropout(embeddings)
         return embeddings

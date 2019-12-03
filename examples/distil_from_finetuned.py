@@ -237,6 +237,7 @@ def main():
         from sklearn.decomposition import PCA
         embeddings = embeddings_tensor.numpy()
         old_dim = embeddings.shape[1]
+        print(embeddings.shape, old_dim)
         
         # preprocessing
         pca1 =  PCA(n_components=old_dim)
@@ -375,6 +376,7 @@ def main():
     train_dataset = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.batch_size)
     logger.info(f'Data loader created.')
     # """
+
     ## STUDENT ##
     student_config = BertConfig(
         vocab_size_or_config_json_file=args.vocab_size,
@@ -399,18 +401,18 @@ def main():
 
         if args.embeddings_from_teacher:
             logger.info("Initialising student embedding parameters from the teacher...")
-            embeddings_file = os.path.join(args.teacher_name, "embeddings_teacher_h{}.pt".format(
-                args.dim if args.embedding_dimensionality_reduction_technique != "linear" else args.embedding_dimensionality))
+            embeddings_file = os.path.join(args.teacher_name, "embeddings_teacher_h{}_{}.pt".format(
+                args.dim if args.embedding_dimensionality_reduction_technique != "linear" else args.embedding_dimensionality,
+                args.embedding_dimensionality_reduction_technique))
             if not os.path.exists(embeddings_file):
                 teacher_state_dict = torch.load(os.path.join(args.teacher_name, "pytorch_model.bin"), map_location=torch.device("cpu"))
                 embedding_param_names = ["bert.embeddings.word_embeddings.weight", 
-                                         "bert.embeddings.position_embeddings.weight", 
                                          "bert.embeddings.token_type_embeddings.weight"]
                 embedding_state_dict = {}
                 for embedding_param_name in embedding_param_names:
                     embedding_weights = teacher_state_dict[embedding_param_name]
-                    if "position" in embedding_param_name: # take only as many position embeddings as required
-                        embedding_weights = embedding_weights[..., :args.max_position_embeddings, :]
+                    # if "position" in embedding_param_name: # take only as many position embeddings as required
+                    #     embedding_weights = embedding_weights[..., :args.max_position_embeddings, :]
                     if args.embedding_dimensionality_reduction_technique == "pca":
                         embedding_weights = compress_embeddings_raunak(args, embedding_weights, new_dim=args.dim)
                     else:
