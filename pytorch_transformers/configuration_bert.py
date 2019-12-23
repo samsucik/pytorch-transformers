@@ -87,7 +87,8 @@ class BertConfig(PretrainedConfig):
                  type_vocab_size=2,
                  initializer_range=0.02,
                  layer_norm_eps=1e-12,
-                 embedding_dimensionality=None,
+                 token_embedding_dimensionality=None,
+                 token_type_embedding_dimensionality=None,
                  **kwargs):
         super(BertConfig, self).__init__(**kwargs)
         if isinstance(vocab_size_or_config_json_file, str) or (sys.version_info[0] == 2
@@ -113,7 +114,8 @@ class BertConfig(PretrainedConfig):
             # Only for cases where the desired embedding dimensionality differs from the hidden size.
             # This way, a smaller model can be initialised with trained embeddings from a big one,
             # then the embeddings are dimensionality-reduced using a linear layer (to match the hidden size).
-            self.embedding_dimensionality = embedding_dimensionality
+            self.token_embedding_dimensionality = token_embedding_dimensionality
+            self.token_type_embedding_dimensionality = token_type_embedding_dimensionality
         else:
             raise ValueError("First argument must be either a vocabulary size (int)"
                              " or the path to a pretrained model config file (str)")

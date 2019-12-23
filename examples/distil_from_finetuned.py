@@ -44,6 +44,16 @@ def main():
                         help="The input data dir. Should contain the .tsv files (or other data files) for the task.")
     parser.add_argument("--output_dir", type=str, required=True,
                         help="The output directory (log, checkpoints, parameters, etc.)")
+    
+    parser.add_argument("--use_word_vectors", type=parse_str2bool, default=False, const=True, nargs='?',
+                        help="Use word embeddings instead of wordpiece embeddings.")
+    parser.add_argument("--word_vectors_dir", default=None, type=str, required=False,
+                        help="Directory where pretrained word embeddings (e.g. word2vec) are located.")
+    parser.add_argument("--transfer_set_tsv", default=None, type=str, required=False,
+                        help="Transfer set as a TSV file, including the sentence, teacher logits and other attributes.")
+    parser.add_argument("--word_vectors_file", default=None, type=str, required=False,
+                        help="File name within word_vectors_dir.")
+
     parser.add_argument("--force", action='store_true',
                         help="Overwrite output_dir if it already exists.")
     parser.add_argument("--task_name", default=None, type=str, required=True,
@@ -138,13 +148,14 @@ def main():
     parser.add_argument("--augmentation_type", default=None, type=str,
                         help="Type of transfer set augmentation (None, gpt-2 or rule-based).")
     
-    parser.add_argument("--embeddings_from_teacher", type=parse_str2bool, default=False, const=True, nargs='?',
+    parser.add_argument("--token_embeddings_from_teacher", type=parse_str2bool, default=False, const=True, nargs='?',
                         help="Take embeddings from the fine-tuned teacher, dimensionality reduced to fit the student.")
-    parser.add_argument("--embedding_dimensionality", type=int, default=None,
-                        help="Dimensionality of trained embeddings to be used (if embeddings_from_teacher set to True).")
-    parser.add_argument("--embedding_dimensionality_reduction_technique", type=str, default='linear',
-                        help="How to bring embeddings from original dimensionality down. 'linear' adds a linear layer into the model, \
-                        'pca' does improved PCA (Raunak, 2017) before loading the embedding weights into the model.")
+    parser.add_argument("--token_type_embedding_dimensionality", type=int, default=None,
+                        help="Dimensionality of trained token type embeddings to be used (taken from teacher model). \
+                              Relevant if token_embeddings_from_teacher or use_word_vectors set to True).")
+    parser.add_argument("--token_embedding_dimensionality", type=int, default=None,
+                        help="Dimensionality of trained wordpiece/word embeddings to be used. Relevant \
+                              if token_embeddings_from_teacher or use_word_vectors set to True).")
 
     args = parser.parse_args()
    
@@ -275,14 +286,48 @@ def main():
         return torch.from_numpy(embeddings_new).float().to(args.device)
 
     ## TOKENIZER ##
-    tokenizer = BertTokenizer.from_pretrained(args.teacher_name, do_lower_case=args.do_lower_case)
-    special_tok_ids = {}
-    for tok_name, tok_symbol in tokenizer.special_tokens_map.items():
-        idx = tokenizer.all_special_tokens.index(tok_symbol)
-        special_tok_ids[tok_name] = tokenizer.all_special_ids[idx]
-    logger.info(f'Special tokens {special_tok_ids}')
-    args.special_tok_ids = special_tok_ids
-    teacher = None
+    if args.use_word_vectors:
+        vocab_file = os.path.join(args.data_dir, "transfer_set_vocab.txt")
+        args.processed_word_vectors_file = os.path.join(args.data_dir, "word_vectors")
+        if not os.path.isfile(vocab_file) or not os.path.isfile(args.processed_word_vectors_file):
+            from pytorch_transformers.tokenization_bert import BasicTokenizer
+            from torchtext.data import Field, TabularDataset
+            from torchtext.vocab import Vectors 
+            def basic_tokenize(text, **tokenizer_kwargs): return BasicTokenizer(**tokenizer_kwargs).tokenize(text)
+            def uniform_unk_init(a=-0.25, b=0.25): return lambda tensor: tensor.uniform_(a, b)
+            TEXT_FIELD = Field(batch_first=True, tokenize=basic_tokenize) #, include_lengths=True)
+            train_fields = [("label", None), ("sentence", TEXT_FIELD), ("logits_0", None), ("logits_1", None)] # for ColA
+            vectors = Vectors(name=args.word_vectors_file, cache=args.word_vectors_dir, unk_init=uniform_unk_init())
+            train_set = TabularDataset.splits(args.data_dir, train=args.transfer_set_tsv, format="tsv", fields=train_fields, skip_header=True)[0]
+            TEXT_FIELD.build_vocab(train_set, vectors=vectors, min_freq=1)
+
+            # save TEXT_FIELD.vocab.itos as vocab file and word vectors too
+            with open(vocab_file, "w", encoding="utf-8") as writer:
+                for word in TEXT_FIELD.vocab.itos:
+                    writer.write(word + u'\n')
+            torch.save(TEXT_FIELD.vocab.vectors, args.processed_word_vectors_file)
+
+        # create BertTokenizer using that vocab file name and config from teacher directory
+        special_tokens_map = {"unk_token": "<unk>", "pad_token": "<pad>", "cls_token": "<cls>", "sep_token": "<sep>"}
+        tokenizer = BertTokenizer(vocab_file=vocab_file, do_lower_case=args.do_lower_case, max_len=args.max_seq_length)
+        tokenizer.add_special_tokens(special_tokens_map)
+
+        special_tok_ids = {}
+        for tok_name, tok_symbol in special_tokens_map.items():
+            idx = tokenizer.encode(tok_symbol)[0]
+            special_tok_ids[tok_name] = idx
+        logger.info("Special tokens: {}".format(special_tok_ids))
+        args.special_tok_ids = special_tok_ids
+        args.vocab_size = len(tokenizer)
+    else:
+        tokenizer = BertTokenizer.from_pretrained(args.teacher_name, do_lower_case=args.do_lower_case)
+        special_tok_ids = {}
+        for tok_name, tok_symbol in tokenizer.special_tokens_map.items():
+            idx = tokenizer.all_special_tokens.index(tok_symbol)
+            special_tok_ids[tok_name] = tokenizer.all_special_ids[idx]
+        logger.info("Special tokens: {}".format(special_tok_ids))
+        args.special_tok_ids = special_tok_ids
+        teacher = None
 
     if args.evaluate_during_training:
         eval_dataset = load_and_cache_examples(args, args.task_name, tokenizer, evaluate=True)
@@ -377,7 +422,11 @@ def main():
     logger.info(f'Data loader created.')
     # """
 
+
     ## STUDENT ##
+
+    # specify embedding dimensionality only if it's different from the hidden size of the student
+    args.use_learned_embeddings = args.token_embeddings_from_teacher or args.use_word_vectors
     student_config = BertConfig(
         vocab_size_or_config_json_file=args.vocab_size,
         hidden_size=args.dim,
@@ -389,45 +438,69 @@ def main():
         max_position_embeddings=args.max_position_embeddings,
         hidden_act=args.activation,
         initializer_range=0.02,
-        embedding_dimensionality=(args.embedding_dimensionality if args.embeddings_from_teacher and \
-                                  args.embedding_dimensionality_reduction_technique == "linear" else None)
+        token_embedding_dimensionality=args.token_embedding_dimensionality,
+        token_type_embedding_dimensionality=args.token_type_embedding_dimensionality,
         )
     
+    # full learned student model
     if args.from_pretrained != "none":
         logger.info("Loading pre-trained student from: {}".format(args.from_pretrained))
         student = BertForSequenceClassification.from_pretrained(args.from_pretrained, config=student_config)
+    
+    # student initialised from scratch or with only embedding layer learned
     else:
         student = BertForSequenceClassification(student_config)
 
-        if args.embeddings_from_teacher:
-            logger.info("Initialising student embedding parameters from the teacher...")
-            embeddings_file = os.path.join(args.teacher_name, "embeddings_teacher_h{}_{}.pt".format(
-                args.dim if args.embedding_dimensionality_reduction_technique != "linear" else args.embedding_dimensionality,
-                args.embedding_dimensionality_reduction_technique))
-            if not os.path.exists(embeddings_file):
+        if args.use_learned_embeddings:          
+            token_type_embedding_name = "bert.embeddings.token_type_embeddings.weight"
+            token_embedding_name = "bert.embeddings.word_embeddings.weight"
+            
+            # retrieve learned token type embeddings to be used with learned wordpiece/word embeddings
+            logger.info("Retrieving learned token type embeddings from the teacher...")
+            token_type_embeddings_file = os.path.join(args.teacher_name, "token_type_embeddings_teacher_h{}.pt"\
+                .format(args.token_type_embedding_dimensionality))
+            if not os.path.isfile(token_type_embeddings_file):
                 teacher_state_dict = torch.load(os.path.join(args.teacher_name, "pytorch_model.bin"), map_location=torch.device("cpu"))
-                embedding_param_names = ["bert.embeddings.word_embeddings.weight", 
-                                         "bert.embeddings.token_type_embeddings.weight"]
-                embedding_state_dict = {}
-                for embedding_param_name in embedding_param_names:
-                    embedding_weights = teacher_state_dict[embedding_param_name]
-                    # if "position" in embedding_param_name: # take only as many position embeddings as required
-                    #     embedding_weights = embedding_weights[..., :args.max_position_embeddings, :]
-                    if args.embedding_dimensionality_reduction_technique == "pca":
-                        embedding_weights = compress_embeddings_raunak(args, embedding_weights, new_dim=args.dim)
-                    else:
-                        assert args.embedding_dimensionality == embedding_weights.shape[-1]
-                    embedding_state_dict[embedding_param_name] = embedding_weights
-
-                torch.save(embedding_state_dict, embeddings_file)
+                embedding_weights = teacher_state_dict[token_type_embedding_name]
+                assert args.token_type_embedding_dimensionality == embedding_weights.shape[-1]
+                token_type_embedding_state_dict = {token_type_embedding_name: embedding_weights}
+                torch.save(token_type_embedding_state_dict, token_type_embeddings_file)
             else:
-                embedding_state_dict = torch.load(embeddings_file, map_location=args.device)
+                token_type_embedding_state_dict = torch.load(token_type_embeddings_file, map_location=args.device)
 
-            param_keys = student.load_state_dict(embedding_state_dict, strict=False)
+            # retrieve learned wordpiece embeddings from teacher model
+            if args.token_embeddings_from_teacher:
+                logger.info("Initialising student wordpiece embedding parameters from the teacher...")
+                embeddings_file = os.path.join(args.teacher_name, "embeddings_teacher_h{}.pt".format(args.token_embedding_dimensionality))
+                if not os.path.exists(embeddings_file):
+                    teacher_state_dict = torch.load(os.path.join(args.teacher_name, "pytorch_model.bin"), map_location=torch.device("cpu"))
+                    embedding_weights = teacher_state_dict[token_embedding_name]
+                    token_embedding_state_dict = {token_embedding_name: embedding_weights}
+                    assert args.token_embedding_dimensionality == embedding_weights.shape[-1]
+                    torch.save(token_embedding_state_dict, embeddings_file)
+                else:
+                    token_embedding_state_dict = torch.load(embeddings_file, map_location=args.device)
+
+            # retrieve learned word embeddings, e.g. word2vec
+            elif args.use_word_vectors:
+                logger.info("Initialising student word embedding parameters from learned word vectors...")
+                # add to the word vectors randomly initialised embeddings for any additional special tokens
+                word_embeddings = torch.load(args.processed_word_vectors_file, map_location=args.device)
+                word_embeddings = torch.cat((word_embeddings, 
+                                             torch.FloatTensor(len(tokenizer.added_tokens_encoder), word_embeddings.shape[1]).uniform_(-0.25, 0.25)))
+                token_embedding_state_dict = {token_embedding_name: word_embeddings}
+
+                # change how datasets are created and cached, don't store the sparse token type, token id and what not tensors!
+                #   store only sentence (unpadded input ids) and logits
+
+            embeddings_to_load = {**token_type_embedding_state_dict, **token_embedding_state_dict}
+            param_keys = student.load_state_dict(embeddings_to_load, strict=False)
             loaded_params = [p for p in student.state_dict() if p not in param_keys[0]]
             num_loaded_params = sum([student.state_dict()[p].numel() for p in loaded_params])
             num_all_params = sum([p.numel() for n, p in student.state_dict().items()])
             logger.info("Loaded {} parameters (out of total {}) into: {}".format(num_loaded_params, num_all_params, loaded_params))
+            exit(0)
+
     if args.n_gpu > 0:
         student.to(f'cuda:{args.local_rank}')
     logger.info(f'Student loaded.')
