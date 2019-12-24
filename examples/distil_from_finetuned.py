@@ -20,13 +20,17 @@ import argparse
 import pickle
 import json
 import shutil
+from tqdm import tqdm
 from types import SimpleNamespace
 
 import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, RandomSampler, TensorDataset, SequentialSampler
+from torchtext.data import Field, TabularDataset
+from torchtext.vocab import Vectors 
 
+from pytorch_transformers.tokenization_bert import BasicTokenizer
 from pytorch_transformers import BertTokenizer, BertForSequenceClassification, BertConfig
 
 from distillation.distiller_from_finetuned import Distiller
@@ -221,22 +225,17 @@ def main():
         }
         return dataset
 
-    def add_logits(teacher, tokenizer, features, args):
-        logger.info("Creating soft labels using the teacher model...")
-        dataset = TensorDataset(features["input_ids"], features["attention_mask"], features["token_type_ids"], features["labels"])
-        B = 2048 # use 128 on 6GB GPUs, or 512*N_GPUS on 12GB GPUs
+    def add_logits(args, teacher, token_ids):
+        logger.info("Generating logits using the teacher model...")
+        dataset = TensorDataset(token_ids)
+        B = 2 # use 128 on 6GB GPUs, or 512*N_GPUS on 12GB GPUs
         dataloader = DataLoader(dataset, batch_size=B, shuffle=False)
         all_logits = None
-        for i, batch in enumerate(dataloader):
-            if args.n_gpu > 0:
-                batch = tuple(t.to(f'cuda:{args.local_rank}') for t in batch)
+        for i, batch in enumerate(tqdm(dataloader)):
             batch = tuple(t.to(args.device) for t in batch)
-            inputs = {'input_ids':      batch[0],
-                      'attention_mask': batch[1],
-                      'token_type_ids': batch[2],
-                      'labels':         batch[3]}
+            input_ids = batch[0]
             with torch.no_grad():
-                (_, logits,) = teacher(**inputs)
+                logits = teacher(input_ids)[0]
             if all_logits is None:
                 all_logits = logits
             else:
@@ -285,16 +284,16 @@ def main():
 
         return torch.from_numpy(embeddings_new).float().to(args.device)
 
-    ## TOKENIZER ##
+    def basic_tokenize(text, **tokenizer_kwargs): return BasicTokenizer(**tokenizer_kwargs).tokenize(text)
+    
+    def uniform_unk_init(a=-0.25, b=0.25): return lambda tensor: tensor.uniform_(a, b)
+
+    # """
+    ## STUDENT'S TOKENIZER ##
     if args.use_word_vectors:
         vocab_file = os.path.join(args.data_dir, "transfer_set_vocab.txt")
         args.processed_word_vectors_file = os.path.join(args.data_dir, "word_vectors")
         if not os.path.isfile(vocab_file) or not os.path.isfile(args.processed_word_vectors_file):
-            from pytorch_transformers.tokenization_bert import BasicTokenizer
-            from torchtext.data import Field, TabularDataset
-            from torchtext.vocab import Vectors 
-            def basic_tokenize(text, **tokenizer_kwargs): return BasicTokenizer(**tokenizer_kwargs).tokenize(text)
-            def uniform_unk_init(a=-0.25, b=0.25): return lambda tensor: tensor.uniform_(a, b)
             TEXT_FIELD = Field(batch_first=True, tokenize=basic_tokenize) #, include_lengths=True)
             train_fields = [("label", None), ("sentence", TEXT_FIELD), ("logits_0", None), ("logits_1", None)] # for ColA
             vectors = Vectors(name=args.word_vectors_file, cache=args.word_vectors_dir, unk_init=uniform_unk_init())
@@ -309,6 +308,7 @@ def main():
 
         # create BertTokenizer using that vocab file name and config from teacher directory
         special_tokens_map = {"unk_token": "<unk>", "pad_token": "<pad>", "cls_token": "<cls>", "sep_token": "<sep>"}
+        # TO-DO: de-activate sub-word tokenization (i.e. the WordPiece tokenizer in BertTokenizer), though it should work either way
         tokenizer = BertTokenizer(vocab_file=vocab_file, do_lower_case=args.do_lower_case, max_len=args.max_seq_length)
         tokenizer.add_special_tokens(special_tokens_map)
 
@@ -327,20 +327,21 @@ def main():
             special_tok_ids[tok_name] = tokenizer.all_special_ids[idx]
         logger.info("Special tokens: {}".format(special_tok_ids))
         args.special_tok_ids = special_tok_ids
-        teacher = None
+        # teacher = None
 
+    """
     if args.evaluate_during_training:
         eval_dataset = load_and_cache_examples(args, args.task_name, tokenizer, evaluate=True)
         eval_sampler = SequentialSampler(eval_dataset)
         eval_dataset = DataLoader(eval_dataset, sampler=eval_sampler, batch_size=args.per_gpu_eval_batch_size)
         def evaluate_fn(params: SimpleNamespace):
-            """
-            params contains:
-            - dataset
-            - model
-            - task_name
-            - device
-            """
+            
+            # params contains:
+            # - dataset
+            # - model
+            # - task_name
+            # - device
+            
             params.model.eval()
             preds, targets = None, None
             for batch in params.dataset:
@@ -359,67 +360,153 @@ def main():
     else:
         eval_dataset = None
         evaluate_fn = None
+    """
 
-    # """
-    ## CACHED TRAINING DATASET ##
-    cached_dataset_file = os.path.join(args.data_dir, 'cached_train{}_msl{}_{}'.format(
-        "" if args.augmentation_type is None else ("_augmented-" + args.augmentation_type),
-        str(args.max_seq_length), 
-        "logits" if not args.use_hard_labels else "hard"))
-    if os.path.exists(cached_dataset_file):
-        logger.info("Loading dataset from cached file %s", cached_dataset_file)
-        d = torch.load(cached_dataset_file, map_location=args.device)
-        train_dataset = TensorDataset(d["input_ids"], d["attention_mask"], d["token_type_ids"], d["labels"], d["logits"])
-    else:
-        ## TEACHER ##
-        teacher = BertForSequenceClassification.from_pretrained(args.teacher_name) # take outputs[1] for the logits
-        if args.n_gpu > 0:
-            teacher.to(f'cuda:{args.local_rank}')
-        logger.info(f'Teacher loaded from {args.teacher_name}.')
-
-        ## ORIGINAL DATASET ##
-        cached_original_set_file = os.path.join(args.data_dir, 'cached_train_msl{}_logits'.format(str(args.max_seq_length)))
-        if os.path.exists(cached_original_set_file):
-            cached_original_set = torch.load(cached_original_set_file, map_location=args.device)
-            logger.info("Loading original dataset from cached file {}".format(cached_original_set_file))
-        else:
-            processor = processors[args.task_name]()
-            original_sentences = processor.get_train_examples(args.data_dir)
-            original_features = create_features(original_sentences, args, label_list=processor.get_labels())
-            original_logits = add_logits(teacher, tokenizer, original_features, args)
-            original_features["logits"] = original_logits
-            cached_original_set = original_features
-            logger.info("Saving original dataset with logits into cached file {}".format(cached_original_set_file))
-            torch.save(cached_original_set, cached_original_set_file)
-
-        ## AUGMENTATION DATASET ##
-        if args.augmentation_type is not None:
-            cached_augmentation_set_file = os.path.join(args.data_dir, 'cached_augmentation-{}_msl{}_logits'.format(
-                args.augmentation_type,
-                str(args.max_seq_length)))
-            if os.path.exists(cached_augmentation_set_file):
-                logger.info("Loading augmentation dataset from cached file {}".format(cached_augmentation_set_file))
-                cached_augmentation_set = torch.load(cached_augmentation_set_file, map_location=args.device)
+    # stage 1: store sentence, label, logits (raw transfer set) as TSV
+    # stage 2: store input ids, label, logits (raw transfer set) as binary
+    
+    input_names = ["input_ids", "attention_mask", "token_type_ids", "labels", "logits"]
+    
+    def has_header(task_name, portion="train"):
+        if task_name == "cola":
+            if portion in ["train", "dev"]:
+                return False
             else:
-                processor = processors["sampled_{}".format(args.augmentation_type)]()
-                augmentation_sentences = processor.get_examples(args.augmentation_data_file)
-                augmentation_features = create_features(augmentation_sentences, args)
-                augmentation_logits = add_logits(nn.DataParallel(teacher).cuda(), tokenizer, augmentation_features, args)
-                augmentation_features["logits"] = augmentation_logits
-                cached_augmentation_set = augmentation_features
-                logger.info("Saving augmentation dataset with logits into cached file {}".format(cached_augmentation_set_file))
-                torch.save(cached_augmentation_set, cached_augmentation_set_file)
+                return True
+        else:
+            raise ValueError("Unrecognised task name: {}".format(args.task_name))
 
-        print(args.device)
-        augmented_dataset = {name: torch.cat([cached_original_set[name], cached_augmentation_set[name]]) \
-                             for name in ["input_ids", "attention_mask", "token_type_ids", "labels", "logits"]}
-        logger.info("Saving augmented original dataset with logits into cached file {}".format(cached_dataset_file))
-        torch.save(augmented_dataset, cached_dataset_file)
-        train_dataset = TensorDataset(*[augmented_dataset[name] for name in ["input_ids", "attention_mask", "token_type_ids", "labels", "logits"]])
+    def numericalise_sentence(args, sentence, tokenizer, cls_token="<cls>", sep_token="<sep>", pad_token_id=0):
+        tokens = tokenizer.tokenize(sentence)
+        if len(tokens) > args.max_seq_length - 2:
+            tokens = tokens[:(args.max_seq_length - 2)]
+        tokens = [cls_token] + tokens + [sep_token]
+        token_ids = tokenizer.convert_tokens_to_ids(tokens)
+        token_ids += [pad_token_id] * (args.max_seq_length - len(token_ids))
+        return token_ids
 
+    def get_train_dataset_fields(args):
+        text_field = Field(use_vocab=False, tokenize=lambda s: s, batch_first=has_header(args.task_name))
+        
+        if args.task_name == "cola":
+            # gj04    0   *   They drank the pub.
+            return [("guid", None), ("label", None), ("acceptability", None), ("sentence", text_field)]
+        else:
+            raise ValueError("Unrecognised task name: {}".format(args.task_name))
+
+    def get_augmented_dataset_fields(args):
+        if args.task_name == "cola":
+            n_classes = 2
+        else:
+            raise ValueError("Unrecognised task name: {}".format(args.task_name))
+
+        text_field = Field(use_vocab=False, tokenize=basic_tokenize, lower=args.do_lower_case, batch_first=True)
+        # label_field = Field(sequential=False, use_vocab=False, batch_first=True)
+        logit_fields = [("logit_{}".format(i), Field(sequential=False, use_vocab=False, batch_first=True, dtype=torch.float)) for i in range(n_classes)]
+
+        return [("sentence", text_field), logit_fields]
+
+    def create_raw_transfer_set(args):
+        cached_dataset_file = os.path.join(args.data_dir, "train{}_scored.tsv".format(
+            "" if args.augmentation_type is None else ("_augmented-" + args.augmentation_type), str(args.max_seq_length)))
+        if os.path.exists(cached_dataset_file):
+            logger.info("Loading raw transfer set from cached file {}".format(cached_dataset_file))
+            fields = get_augmented_dataset_fields(args)
+            train_set = TabularDataset(cached_dataset_file, format="tsv", fields=fields, skip_header=True)
+            print(train_set)
+            # d = torch.load(cached_dataset_file, map_location=args.device)
+            # train_dataset = TensorDataset(*[d[name] for name in input_names])
+        else:
+            # get original set
+            fields = get_train_dataset_fields(args)
+            original_train_file = os.path.join(args.data_dir, "train.tsv")
+            original_train_set = TabularDataset(original_train_file, format="tsv", fields=fields, skip_header=has_header(args.task_name))
+
+            # get augmentation set
+            augmentation_file = os.path.join(args.data_dir, "sampled_sentences")
+            augmentation_fields = [("sentence", Field(use_vocab=False, tokenize=lambda s: s[2:], batch_first=True))] # drop first 2 chars!
+            augmentation_set = TabularDataset(augmentation_file, format="tsv", fields=augmentation_fields, skip_header=False)
+
+            # merge to create entire transfer set
+            combined_transfer_set = original_train_set
+            combined_transfer_set.examples += augmentation_set.examples
+
+            # TO-DO delete once everything works
+            combined_transfer_set.examples = combined_transfer_set.examples[:5]
+
+            # numericalise and pad the sentences
+            tokenizer_teacher = BertTokenizer.from_pretrained(args.teacher_name, do_lower_case=args.do_lower_case)
+            numericalised_transfer_set = []
+            cls_token, sep_token, pad_token = tokenizer_teacher.cls_token, tokenizer_teacher.sep_token, tokenizer_teacher.pad_token_id
+            pad_token_id = tokenizer_teacher.convert_tokens_to_ids([pad_token])[0]
+            logger.info("Numericalising the transfer set using the teacher's tokenizer...")
+            for example in tqdm(combined_transfer_set.examples):
+                example_numericalised = numericalise_sentence(args, example.sentence, tokenizer_teacher, 
+                                                              cls_token=cls_token, sep_token=sep_token, 
+                                                              pad_token_id=pad_token_id)
+                numericalised_transfer_set.append(torch.LongTensor(example_numericalised))
+            numericalised_transfer_set = torch.stack(numericalised_transfer_set)
+
+            # add teacher logits
+            teacher = BertForSequenceClassification.from_pretrained(args.teacher_name) # take outputs[1] for the logits
+            teacher.to(args.device)
+            logits = add_logits(args, teacher, numericalised_transfer_set)
+
+            # write sentences and logits into TSV
+            with open(cached_dataset_file, "w") as writer:
+                n_logits = logits.shape[1]
+                writer.write("sentence\t" + "\t".join(["logit_{}".format(i) for i in range(n_logits)]) + "\n")
+                for i, ex in enumerate(combined_transfer_set.examples):
+                    soft_labels = logits[i, :].numpy()
+                    soft_labels_str = "\t".join([str(logit) for logit in soft_labels])
+                    writer.write("{}\t".format(ex.sentence) + soft_labels_str + "\n")
+            exit(0)
+            
+            ## ORIGINAL DATASET ##
+            cached_original_set_file = os.path.join(args.data_dir, 'cached_train_msl{}_logits'.format(str(args.max_seq_length)))
+            if os.path.exists(cached_original_set_file):
+                cached_original_set = torch.load(cached_original_set_file, map_location=args.device)
+                logger.info("Loading original dataset from cached file {}".format(cached_original_set_file))
+            else:
+                processor = processors[args.task_name]()
+                original_sentences = processor.get_train_examples(args.data_dir)
+                original_features = create_features(original_sentences, args, label_list=processor.get_labels())
+                original_logits = add_logits(teacher, tokenizer, original_features, args)
+                original_features["logits"] = original_logits
+                cached_original_set = original_features
+                logger.info("Saving original dataset with logits into cached file {}".format(cached_original_set_file))
+                torch.save(cached_original_set, cached_original_set_file)
+
+            ## AUGMENTATION DATASET ##
+            if args.augmentation_type is not None:
+                cached_augmentation_set_file = os.path.join(args.data_dir, 'cached_augmentation-{}_msl{}_logits'.format(
+                    args.augmentation_type,
+                    str(args.max_seq_length)))
+                if os.path.exists(cached_augmentation_set_file):
+                    logger.info("Loading augmentation dataset from cached file {}".format(cached_augmentation_set_file))
+                    cached_augmentation_set = torch.load(cached_augmentation_set_file, map_location=args.device)
+                else:
+                    processor = processors["sampled_{}".format(args.augmentation_type)]()
+                    augmentation_sentences = processor.get_examples(args.augmentation_data_file)
+                    augmentation_features = create_features(augmentation_sentences, args)
+                    augmentation_logits = add_logits(nn.DataParallel(teacher).cuda(), tokenizer, augmentation_features, args)
+                    augmentation_features["logits"] = augmentation_logits
+                    cached_augmentation_set = augmentation_features
+                    logger.info("Saving augmentation dataset with logits into cached file {}".format(cached_augmentation_set_file))
+                    torch.save(cached_augmentation_set, cached_augmentation_set_file)
+
+            # print(args.device)
+            augmented_dataset = {name: torch.cat([cached_original_set[name], cached_augmentation_set[name]]) \
+                                 for name in ["input_ids", "attention_mask", "token_type_ids", "labels", "logits"]}
+            logger.info("Saving augmented original dataset with logits into cached file {}".format(cached_dataset_file))
+            torch.save(augmented_dataset, cached_dataset_file)
+        return augmented_dataset
+
+    augmented_dataset = create_raw_transfer_set(args)
+    train_dataset = TensorDataset(*[augmented_dataset[name] for name in ["input_ids", "attention_mask", "token_type_ids", "labels", "logits"]])
     train_sampler = RandomSampler(train_dataset)
     train_dataset = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.batch_size)
-    logger.info(f'Data loader created.')
+    logger.info("Data loader created.")
     # """
 
 
