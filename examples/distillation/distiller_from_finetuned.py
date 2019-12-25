@@ -37,15 +37,15 @@ from examples.distillation.utils import logger
 from examples.run_glue import set_seed, evaluate
 
 class Distiller:
-    def __init__(self,
-                 params,
-                 dataset_train, # type Dataset (if BERT) or torchtext.data.Dataset (if LSTM)
-                 dataset_eval, # type Dataset (if BERT) or torchtext.data.Dataset (if LSTM)
-                 student: nn.Module,
-                 evaluate_fn=None,
-                 student_type="BERT" # one of BERT, LSTM
-                 ):
-
+    def __init__(
+        self,
+        params,
+        dataset_train, # type Dataset (if BERT) or torchtext.data.Dataset (if LSTM)
+        dataset_eval, # type Dataset (if BERT) or torchtext.data.Dataset (if LSTM)
+        student: nn.Module,
+        evaluate_fn=None,
+        student_type="BERT" # one of BERT, LSTM
+    ):
         logger.info('Initializing Distiller')
         assert student_type in ["BERT", "LSTM"]
         self.student_type = student_type
@@ -198,12 +198,7 @@ class Distiller:
         """
         if self.student_type == "BERT":
             batch = tuple(t.to(self.params.device) for t in batch)
-            inputs = {'input_ids':      batch[0],
-                      'attention_mask': batch[1],
-                      'token_type_ids': batch[2],
-                      'labels':         batch[3]}
-            _, logits = self.student(**inputs)
-            labels = batch[3]
+            logits = self.student(input_ids=batch[0])[0]
             n_sequences = batch[0].size(0)
         else:
             # TODO: convert batch to this device?
@@ -211,11 +206,11 @@ class Distiller:
             labels = batch.label
             n_sequences = batch.sentence[1].size(0) # batch.sentence is: (sents, sent_lens)
 
-        if self.use_hard_labels:
+        if self.use_hard_labels: # currently broken for BERT as labels are not included in the transfer set
             loss = self.ce_simple_loss_fct(logits, labels)
         else:
             if self.student_type == "BERT":
-                teacher_logits = batch[4]
+                teacher_logits = batch[1]
             else:
                 teacher_logits = torch.stack((batch.logits_0, batch.logits_1), 1) # TODO: change for n_classes != 2
             assert logits.size() == teacher_logits.size()
