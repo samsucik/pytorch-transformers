@@ -22,8 +22,8 @@ import json
 import shutil
 from tqdm import tqdm
 from types import SimpleNamespace
-
 import numpy as np
+
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, RandomSampler, TensorDataset, SequentialSampler
@@ -34,11 +34,10 @@ from pytorch_transformers.tokenization_bert import BasicTokenizer
 from pytorch_transformers import BertTokenizer, BertForSequenceClassification, BertConfig
 
 from distillation.distiller_from_finetuned import Distiller
-from distillation.utils import git_log, logger, init_gpu_params, set_seed, parse_str2bool
+from distillation.utils import logger, init_gpu_params, set_seed, parse_str2bool
 from distillation.dataset import Dataset
 
-from utils_glue import processors, output_modes, convert_examples_to_features, compute_metrics
-from run_glue import load_and_cache_examples
+from utils_glue import processors, compute_metrics
 
 
 def main():
@@ -178,7 +177,6 @@ def main():
             os.makedirs(args.output_dir)
         logger.info(f'Experiment will be dumped and logged in {args.output_dir}')
 
-
         ### SAVE PARAMS ###
         logger.info("Param: {}".format(args))
         with open(os.path.join(args.output_dir, 'parameters.json'), 'w') as f:
@@ -188,42 +186,15 @@ def main():
     args.task_name = args.task_name.lower()
     if args.task_name not in processors:
         raise ValueError("Task not found: {}".format(args.task_name))
-    args.model_name_or_path = args.teacher_name
     args.max_seq_length = args.max_position_embeddings
-    args.model_type = "bert"
-    args.output_mode = output_modes[args.task_name]
 
     # Setup CUDA, GPU & distributed training
     if args.local_rank == -1 or args.no_cuda:
-        device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
+        args.device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
         args.n_gpu = torch.cuda.device_count()
         args.local_rank = -1
     else:  # Initializes the distributed backend which will take care of sychronizing nodes/GPUs
-        device = torch.device("cuda", args.local_rank)
-    args.device = device
-
-    def create_features(sentences, args, label_list=[0]):
-        features = convert_examples_to_features(sentences, 
-            label_list=label_list,
-            max_seq_length=args.max_seq_length, 
-            tokenizer=tokenizer, output_mode="classification",
-            cls_token_at_end=False,
-            cls_token=tokenizer.cls_token,
-            cls_token_segment_id=0,
-            sep_token=tokenizer.sep_token,
-            sep_token_extra=False,
-            pad_on_left=False,
-            pad_token=tokenizer.convert_tokens_to_ids([tokenizer.pad_token])[0],
-            pad_token_segment_id=0,
-            show_examples=False
-        )
-        dataset = {
-            "input_ids": torch.tensor([f.input_ids for f in features], dtype=torch.long).to(args.device),
-            "attention_mask": torch.tensor([f.input_mask for f in features], dtype=torch.long).to(args.device),
-            "token_type_ids": torch.tensor([f.segment_ids for f in features], dtype=torch.long).to(args.device),
-            "labels": torch.tensor([f.label_id for f in features], dtype=torch.long).to(args.device)
-        }
-        return dataset
+        args.device = torch.device("cuda", args.local_rank)
 
     def add_logits(args, teacher, token_ids):
         logger.info("Generating logits using the teacher model")
@@ -307,7 +278,7 @@ def main():
         return token_ids
 
     def get_original_dev_dataset_fields(args):
-        text_field = Field(use_vocab=False, tokenize=lambda s: s, batch_first=True)
+        text_field = Field(use_vocab=False, tokenize=lambda s: s, batch_first=True, lower=args.do_lower_case)
         label_field = Field(sequential=False, use_vocab=False, batch_first=True)
         if args.task_name == "cola":
             # gj04    0   *   They drank the pub.
@@ -316,7 +287,7 @@ def main():
             raise ValueError("Unrecognised task name: {}".format(args.task_name))
 
     def get_original_train_dataset_fields(args):
-        text_field = Field(use_vocab=False, tokenize=lambda s: s, batch_first=True)
+        text_field = Field(use_vocab=False, tokenize=lambda s: s, batch_first=True, lower=args.do_lower_case)
         if args.task_name == "cola":
             # gj04    0   *   They drank the pub.
             return [("guid", None), ("label", None), ("acceptability", None), ("sentence", text_field)]
@@ -348,7 +319,7 @@ def main():
 
             # get augmentation set
             augmentation_file = os.path.join(args.data_dir, "sampled_sentences")
-            augmentation_fields = [("sentence", Field(use_vocab=False, tokenize=lambda s: s[2:], batch_first=True))] # drop first 2 chars!
+            augmentation_fields = [("sentence", Field(use_vocab=False, tokenize=lambda s: s[2:], lower=args.do_lower_case, batch_first=True))] # drop first 2 chars!
             augmentation_set = TabularDataset(augmentation_file, format="tsv", fields=augmentation_fields, skip_header=False)
 
             # merge to create entire transfer set
@@ -356,7 +327,7 @@ def main():
             combined_transfer_set.examples += augmentation_set.examples
 
             # TO-DO delete once everything works
-            # combined_transfer_set.examples = combined_transfer_set.examples[:5]
+            combined_transfer_set.examples = combined_transfer_set.examples[:5]
 
             # numericalise and pad the sentences
             tokenizer_teacher = BertTokenizer.from_pretrained(args.teacher_name, do_lower_case=args.do_lower_case)
@@ -392,7 +363,7 @@ def main():
 
         return train_set
 
-    def create_numerical_transfer_set(args, transfer_dataset_numerical_file, transfer_dataset_raw):
+    def create_numerical_transfer_set(args, transfer_dataset_numerical_file, tokenizer, transfer_dataset_raw=None):
         if not os.path.exists(transfer_dataset_numerical_file):
             logger.info("Creating numerical transfer dataset from the raw one")
             transfer_dataset_numerical = {"sentence": [], "logits": []}
@@ -404,7 +375,8 @@ def main():
             for example in tqdm(transfer_dataset_raw.examples):
                 # here, the sentence is already tokenized into words, which is OK (when using wordpieces, not words)
                 # ONLY IF BertTokenizer has do_basic_tokenize set to True -- but that's the (sensible) default.
-                example_numericalised = numericalise_sentence(args, " ".join(example.sentence), tokenizer, 
+                sentence = " ".join(example.sentence)
+                example_numericalised = numericalise_sentence(args, sentence, tokenizer, 
                                                               cls_token=cls_token, sep_token=sep_token, 
                                                               pad_token_id=pad_token_id)
                 example_logits = [float(getattr(example, logit_name)) for logit_name in logit_names]
@@ -419,7 +391,7 @@ def main():
         transfer_dataset = TensorDataset(transfer_dataset_numerical["sentence"], transfer_dataset_numerical["logits"])
         return transfer_dataset
     
-    def create_numerical_dev_set(args, dev_dataset_numerical_file):
+    def create_numerical_dev_set(args, dev_dataset_numerical_file, tokenizer):
         if not os.path.isfile(dev_dataset_numerical_file):
             # logger.info("Creating the raw transfer set with teacher logits")
             fields = get_original_dev_dataset_fields(args)
@@ -443,17 +415,33 @@ def main():
             dev_dataset_numerical = torch.load(dev_dataset_numerical_file, map_location=args.device)
         return dev_dataset_numerical
 
-    ## TRANSFER SET STAGE 1: create and store sentence and logits as TSV - model-agnostic raw transfer set.
-    transfer_dataset_file = os.path.join(args.data_dir, "train{}_scored.tsv".format(
-            "" if args.augmentation_type is None else ("_augmented-" + args.augmentation_type)))
-    transfer_dataset_raw = create_raw_transfer_set(args, transfer_dataset_file)
-    
+    def evaluate_model(params: SimpleNamespace):
+        # params contains:
+        # - dataset
+        # - model
+        # - task_name
+        # - device
+        params.model.eval()
+        preds, targets = None, None
+        for batch in params.dataset:
+            batch = tuple(t.to(params.device) for t in batch)
+            with torch.no_grad():
+                logits = params.model(batch[0])[0]
+            labels_pred = logits.max(1)[1]
+            if preds is None:
+                preds = labels_pred.detach().cpu().numpy()
+                targets = batch[1].detach().cpu().numpy()
+            else:
+                preds = np.append(preds, labels_pred.detach().cpu().numpy(), axis=0)
+                targets = np.append(targets, batch[1].detach().cpu().numpy(), axis=0)
+        result = compute_metrics(params.task_name, preds, targets)
+        return result
 
-    ## STUDENT'S TOKENIZER
-    if args.use_word_vectors:
-        vocab_file = os.path.join(args.data_dir, "transfer_set_vocab.txt")
-        args.processed_word_vectors_file = os.path.join(args.data_dir, "word_vectors")
-        if not os.path.isfile(vocab_file) or not os.path.isfile(args.processed_word_vectors_file):
+    def create_word_level_tokenizer(args, vocab_file, processed_word_vectors_file, transfer_dataset_raw, transfer_dataset_raw_file):
+        if not os.path.isfile(vocab_file) or not os.path.isfile(processed_word_vectors_file):
+            if transfer_dataset_raw is None:
+                logger.info("Creating the raw (TSV) transfer set as it doesn't exist but is needed to construct student's word-level tokenizer")
+                transfer_dataset_raw = create_raw_transfer_set(args, transfer_dataset_raw_file)
             logger.info("Creating vocab file from the transfer set")
             vectors = Vectors(name=args.word_vectors_file, cache=args.word_vectors_dir, unk_init=uniform_unk_init())
             text_field = transfer_dataset_raw.fields["sentence"]
@@ -461,7 +449,7 @@ def main():
             with open(vocab_file, "w", encoding="utf-8") as writer:
                 for word in text_field.vocab.itos:
                     writer.write(word + u'\n')
-            torch.save(text_field.vocab.vectors, args.processed_word_vectors_file)
+            torch.save(text_field.vocab.vectors, processed_word_vectors_file)
 
         # create BertTokenizer using that vocab file name and config from teacher directory
         special_tokens_map = {"unk_token": "<unk>", "pad_token": "<pad>", "cls_token": "<cls>", "sep_token": "<sep>"}
@@ -473,6 +461,27 @@ def main():
         for tok_name, tok_symbol in special_tokens_map.items():
             idx = tokenizer.encode(tok_symbol)[0]
             special_tok_ids[tok_name] = idx
+        logger.info("Special tokens: {}".format(special_tok_ids))
+        args.special_tok_ids = special_tok_ids
+        return tokenizer
+
+    ## TRANSFER SET
+    transfer_dataset_numerical_file = os.path.join(args.data_dir, "train{}_{}_msl{}.bin".format(
+            "" if args.augmentation_type is None else ("_augmented-" + args.augmentation_type), 
+            "word" if args.use_word_vectors else "wordpiece", str(args.max_seq_length)))
+    transfer_dataset_raw_file = os.path.join(args.data_dir, "train{}_scored.tsv".format(
+            "" if args.augmentation_type is None else ("_augmented-" + args.augmentation_type)))
+    # STAGE 1: create and store sentence and logits as TSV - model-agnostic raw transfer set.
+    if not os.path.isfile(transfer_dataset_numerical_file):
+        transfer_dataset_raw = create_raw_transfer_set(args, transfer_dataset_raw_file)
+    else:
+        transfer_dataset_raw = None
+
+    ## STUDENT'S TOKENIZER
+    if args.use_word_vectors:
+        vocab_file = os.path.join(args.data_dir, "transfer_set_vocab.txt")
+        args.processed_word_vectors_file = os.path.join(args.data_dir, "word_vectors")
+        tokenizer = create_word_level_tokenizer(args, vocab_file, args.processed_word_vectors_file, transfer_dataset_raw, transfer_dataset_raw_file)
         args.vocab_size = len(tokenizer)
     else:
         tokenizer = BertTokenizer.from_pretrained(args.teacher_name, do_lower_case=args.do_lower_case)
@@ -480,53 +489,26 @@ def main():
         for tok_name, tok_symbol in tokenizer.special_tokens_map.items():
             idx = tokenizer.all_special_tokens.index(tok_symbol)
             special_tok_ids[tok_name] = tokenizer.all_special_ids[idx]
-    logger.info("Special tokens: {}".format(special_tok_ids))
-    args.special_tok_ids = special_tok_ids
+        logger.info("Special tokens: {}".format(special_tok_ids))
+        args.special_tok_ids = special_tok_ids
 
-
-    ## TRANSFER SET STAGE 2: create and store numericalised transfer set (input ids, logits) as binary - model-specific transfer set.
-    transfer_dataset_numerical_file = os.path.join(args.data_dir, "train{}_{}_msl{}.bin".format(
-            "" if args.augmentation_type is None else ("_augmented-" + args.augmentation_type), 
-            "word" if args.use_word_vectors else "wordpiece", str(args.max_seq_length)))
-    transfer_dataset_numerical = create_numerical_transfer_set(args, transfer_dataset_numerical_file, transfer_dataset_raw)
+    # STAGE 2: create and store numericalised transfer set (input ids, logits) as binary - model-specific transfer set.
+    transfer_dataset_numerical = create_numerical_transfer_set(args, transfer_dataset_numerical_file, tokenizer, transfer_dataset_raw)
     transfer_dataset_sampler = RandomSampler(transfer_dataset_numerical)
     transfer_dataset = DataLoader(transfer_dataset_numerical, sampler=transfer_dataset_sampler, batch_size=args.batch_size)
-
 
     ## DEV SET
     if args.evaluate_during_training:
         dev_dataset_numerical_file = os.path.join(args.data_dir, "dev_{}_msl{}.bin".format(
             "word" if args.use_word_vectors else "wordpiece", str(args.max_seq_length)))
-        dev_dataset_numerical = create_numerical_dev_set(args, dev_dataset_numerical_file)
+        dev_dataset_numerical = create_numerical_dev_set(args, dev_dataset_numerical_file, tokenizer)
         dev_dataset = TensorDataset(dev_dataset_numerical["sentence"], dev_dataset_numerical["label"])
         dev_dataset_sampler = SequentialSampler(dev_dataset)
         dev_dataset = DataLoader(dev_dataset, sampler=dev_dataset_sampler, batch_size=args.per_gpu_eval_batch_size)
-
-        def evaluate_fn(params: SimpleNamespace):
-            # params contains:
-            # - dataset
-            # - model
-            # - task_name
-            # - device
-            params.model.eval()
-            preds, targets = None, None
-            for batch in params.dataset:
-                batch = tuple(t.to(params.device) for t in batch)
-                with torch.no_grad():
-                    logits = params.model(batch[0])[0]
-                labels_pred = logits.max(1)[1]
-                if preds is None:
-                    preds = labels_pred.detach().cpu().numpy()
-                    targets = batch[1].detach().cpu().numpy()
-                else:
-                    preds = np.append(preds, labels_pred.detach().cpu().numpy(), axis=0)
-                    targets = np.append(targets, batch[1].detach().cpu().numpy(), axis=0)
-            result = compute_metrics(params.task_name, preds, targets)
-            return result
+        evaluate_fn = evaluate_model
     else:
         dev_dataset = None
         evaluate_fn = None
-
 
     ## STUDENT
 
@@ -545,13 +527,12 @@ def main():
         initializer_range=0.02,
         token_embedding_dimensionality=args.token_embedding_dimensionality,
         token_type_embedding_dimensionality=args.token_type_embedding_dimensionality,
-    )
-    
-    # full learned student model
+    )    
+    # Either load full learned student model
     if args.from_pretrained != "none":
         logger.info("Loading pre-trained student from: {}".format(args.from_pretrained))
         student = BertForSequenceClassification.from_pretrained(args.from_pretrained, config=student_config)
-    # student initialised from scratch or with only embedding layer learned
+    # Or create student initialised from scratch, or with only embedding layer learned
     else:
         student = BertForSequenceClassification(student_config)
 
@@ -602,7 +583,6 @@ def main():
             logger.info("Loaded {} parameters (out of total {}) into: {}".format(num_loaded_params, num_all_params, loaded_params))
     student.to(args.device)
     logger.info("Student model created.")
-
     
     ## DISTILLER
     torch.cuda.empty_cache()

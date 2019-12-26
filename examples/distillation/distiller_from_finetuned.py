@@ -36,6 +36,14 @@ from pytorch_transformers import WarmupLinearSchedule, WarmupConstantSchedule
 from examples.distillation.utils import logger
 from examples.run_glue import set_seed, evaluate
 
+def human_format(num):
+    # from https://stackoverflow.com/questions/579310/formatting-long-numbers-as-strings-in-python
+    magnitude = 0
+    while abs(num) >= 1000:
+        magnitude += 1
+        num /= 1000.0
+    return "{:.2f}{}".format(num, ['', 'K', 'M', 'G', 'T', 'P'][magnitude])
+
 class Distiller:
     def __init__(
         self,
@@ -100,12 +108,14 @@ class Distiller:
             student_params = [p for p in self.student.parameters() if p.requires_grad]
             self.parameters_to_clip = self.student.non_embedding_params()
 
-        logger.info("------ Number of trainable parameters (all): {}".format(
-            sum([p.numel() for p in self.student.parameters() if p.requires_grad])))
-        logger.info("------ Number of trainable parameters (embeddings): {}".format(
-            sum([p.numel() for n, p in self.student.named_parameters() if (p.requires_grad and "embed" in n)])))
-        logger.info("------ Number of all parameters: {}".format(
-            sum([p.numel() for p in self.student.parameters()])))
+        num_params = sum([p.numel() for p in self.student.parameters()])
+        logger.info("------ Number of all parameters: {} ({})".format(num_params, human_format(num_params)))
+        num_trainable_params = sum([p.numel() for p in self.student.parameters() if p.requires_grad])
+        logger.info("------ Number of trainable parameters (all): {} ({})".format(num_trainable_params, human_format(num_trainable_params)))
+        num_trainable_params_embed = sum([p.numel() for n, p in self.student.named_parameters() if (p.requires_grad and "embed" in n)])
+        logger.info("------ Number of embedding trainable parameters: {} ({})".format(num_trainable_params_embed, human_format(num_trainable_params_embed)))
+        num_trainable_params_other = num_trainable_params - num_trainable_params_embed
+        logger.info("------ Number of other trainable parameters: {} ({})".format(num_trainable_params_other, human_format(num_trainable_params_other)))
         
         if params.optimizer == "adam":
             self.optimizer = AdamW(student_params, lr=params.learning_rate, eps=1e-6, betas=(0.9, 0.98))
