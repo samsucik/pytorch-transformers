@@ -202,6 +202,7 @@ def main():
         B = 512 # use 128 on 6GB GPUs, or 512*N_GPUS on 12GB GPUs
         dataloader = DataLoader(dataset, batch_size=B, shuffle=False)
         all_logits = None
+        teacher.eval()
         for i, batch in enumerate(tqdm(dataloader)):
             batch = tuple(t.to(args.device) for t in batch)
             input_ids = batch[0]
@@ -211,7 +212,7 @@ def main():
                 all_logits = logits
             else:
                 all_logits = torch.cat([all_logits, logits], dim=0)
-            logger.info("{}/{}".format(i*B, len(dataloader)*B))
+            # print(input_ids, logits)
         return all_logits
 
     def compress_embeddings_raunak(args, embeddings_tensor: torch.Tensor, new_dim=256, D1=5, D3=0):
@@ -268,7 +269,7 @@ def main():
         else:
             raise ValueError("Unrecognised task name: {}".format(args.task_name))
 
-    def numericalise_sentence(args, sentence, tokenizer, cls_token="<cls>", sep_token="<sep>", pad_token_id=0):
+    def numericalise_sentence(args, sentence, tokenizer, cls_token="[CLS]", sep_token="[SEP]", pad_token_id=0):
         tokens = tokenizer.tokenize(sentence)
         if len(tokens) > args.max_seq_length - 2:
             tokens = tokens[:(args.max_seq_length - 2)]
@@ -287,7 +288,7 @@ def main():
             raise ValueError("Unrecognised task name: {}".format(args.task_name))
 
     def get_original_train_dataset_fields(args):
-        text_field = Field(use_vocab=False, tokenize=lambda s: s, batch_first=True, lower=args.do_lower_case)
+        text_field = Field(use_vocab=False, tokenize=lambda s: s, lower=args.do_lower_case, batch_first=True)
         if args.task_name == "cola":
             # gj04    0   *   They drank the pub.
             return [("guid", None), ("label", None), ("acceptability", None), ("sentence", text_field)]
@@ -327,26 +328,32 @@ def main():
             combined_transfer_set.examples += augmentation_set.examples
 
             # TO-DO delete once everything works
-            combined_transfer_set.examples = combined_transfer_set.examples[:5]
+            # combined_transfer_set.examples = combined_transfer_set.examples[:4]
 
             # numericalise and pad the sentences
             tokenizer_teacher = BertTokenizer.from_pretrained(args.teacher_name, do_lower_case=args.do_lower_case)
             numericalised_transfer_set = []
-            cls_token, sep_token, pad_token = tokenizer_teacher.cls_token, tokenizer_teacher.sep_token, tokenizer_teacher.pad_token_id
+            cls_token, sep_token, pad_token = tokenizer_teacher.cls_token, tokenizer_teacher.sep_token, tokenizer_teacher.pad_token
+            print(cls_token, sep_token, pad_token)
             pad_token_id = tokenizer_teacher.convert_tokens_to_ids([pad_token])[0]
+            # print(pad_token_id)
+            # exit(0)
             logger.info("Numericalising the transfer set using the teacher's tokenizer")
             for example in tqdm(combined_transfer_set.examples):
+                # print(example.sentence)
                 example_numericalised = numericalise_sentence(args, example.sentence, tokenizer_teacher, 
                                                               cls_token=cls_token, sep_token=sep_token, 
                                                               pad_token_id=pad_token_id)
+                # print(example_numericalised)
+                # print(tokenizer_teacher.decode(example_numericalised))
                 numericalised_transfer_set.append(torch.LongTensor(example_numericalised))
             numericalised_transfer_set = torch.stack(numericalised_transfer_set)
-
             # add teacher logits
             teacher = BertForSequenceClassification.from_pretrained(args.teacher_name) # take outputs[1] for the logits
             teacher.to(args.device)
             logits = add_logits(args, teacher, numericalised_transfer_set)
 
+            # """
             # write sentences and logits into TSV
             with open(cached_dataset_file, "w") as writer:
                 n_logits = logits.shape[1]
@@ -355,6 +362,15 @@ def main():
                     soft_labels = logits[i, :].cpu().numpy()
                     soft_labels_str = "\t".join([str(logit) for logit in soft_labels])
                     writer.write("{}\t".format(ex.sentence) + soft_labels_str + "\n")
+            """
+            n_logits = logits.shape[1]
+            # writer.write("sentence\t" + "\t".join(["logit_{}".format(i) for i in range(n_logits)]) + "\n")
+            for i, ex in enumerate(combined_transfer_set.examples):
+                soft_labels = logits[i, :].cpu().numpy()
+                soft_labels_str = "\t".join([str(logit) for logit in soft_labels])
+                print("{}\t".format(ex.sentence) + soft_labels_str + "\n")
+            exit(0)
+            """
         
         # read the dataset from TSV
         logger.info("Loading raw transfer set from TSV file {}".format(cached_dataset_file))
@@ -379,6 +395,7 @@ def main():
                 example_numericalised = numericalise_sentence(args, sentence, tokenizer, 
                                                               cls_token=cls_token, sep_token=sep_token, 
                                                               pad_token_id=pad_token_id)
+                # print(example_numericalised)
                 example_logits = [float(getattr(example, logit_name)) for logit_name in logit_names]
                 transfer_dataset_numerical["sentence"].append(torch.LongTensor(example_numericalised))
                 transfer_dataset_numerical["logits"].append(torch.FloatTensor(example_logits))
