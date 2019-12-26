@@ -556,7 +556,7 @@ def main():
             # retrieve learned wordpiece embeddings from teacher model
             if args.token_embeddings_from_teacher:
                 logger.info("Initialising student wordpiece embedding parameters from the teacher")
-                embeddings_file = os.path.join(args.teacher_name, "embeddings_teacher_h{}.pt".format(args.token_embedding_dimensionality))
+                embeddings_file = os.path.join(args.teacher_name, "wordpiece_embeddings_teacher_h{}.pt".format(args.token_embedding_dimensionality))
                 if not os.path.exists(embeddings_file):
                     teacher_state_dict = torch.load(os.path.join(args.teacher_name, "pytorch_model.bin"), map_location=torch.device("cpu"))
                     embedding_weights = teacher_state_dict[token_embedding_name]
