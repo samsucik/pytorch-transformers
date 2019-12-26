@@ -228,7 +228,7 @@ def main():
     def add_logits(args, teacher, token_ids):
         logger.info("Generating logits using the teacher model")
         dataset = TensorDataset(token_ids)
-        B = 2 # use 128 on 6GB GPUs, or 512*N_GPUS on 12GB GPUs
+        B = 512 # use 128 on 6GB GPUs, or 512*N_GPUS on 12GB GPUs
         dataloader = DataLoader(dataset, batch_size=B, shuffle=False)
         all_logits = None
         for i, batch in enumerate(tqdm(dataloader)):
@@ -381,7 +381,7 @@ def main():
                 n_logits = logits.shape[1]
                 writer.write("sentence\t" + "\t".join(["logit_{}".format(i) for i in range(n_logits)]) + "\n")
                 for i, ex in enumerate(combined_transfer_set.examples):
-                    soft_labels = logits[i, :].numpy()
+                    soft_labels = logits[i, :].cpu().numpy()
                     soft_labels_str = "\t".join([str(logit) for logit in soft_labels])
                     writer.write("{}\t".format(ex.sentence) + soft_labels_str + "\n")
         
@@ -591,7 +591,7 @@ def main():
                 # add to the word vectors randomly initialised embeddings for any additional special tokens
                 word_embeddings = torch.load(args.processed_word_vectors_file, map_location=args.device)
                 word_embeddings = torch.cat((word_embeddings, 
-                                             torch.FloatTensor(len(tokenizer.added_tokens_encoder), word_embeddings.shape[1]).uniform_(-0.25, 0.25)))
+                                             torch.FloatTensor(len(tokenizer.added_tokens_encoder), word_embeddings.shape[1]).uniform_(-0.25, 0.25).to(args.device)))
                 token_embedding_state_dict = {token_embedding_name: word_embeddings}
 
             embeddings_to_load = {**token_type_embedding_state_dict, **token_embedding_state_dict}
