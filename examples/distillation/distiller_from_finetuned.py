@@ -109,12 +109,19 @@ class Distiller:
             self.parameters_to_clip = self.student.non_embedding_params()
 
         num_params = sum([p.numel() for p in self.student.parameters()])
+        self.params.n_params = num_params
         logger.info("------ Number of all parameters: {} ({})".format(num_params, human_format(num_params)))
+        
         num_trainable_params = sum([p.numel() for p in self.student.parameters() if p.requires_grad])
+        self.params.n_params_train = num_trainable_params
         logger.info("------ Number of trainable parameters (all): {} ({})".format(num_trainable_params, human_format(num_trainable_params)))
+
         num_trainable_params_embed = sum([p.numel() for n, p in self.student.named_parameters() if (p.requires_grad and "embed" in n)])
+        self.params.n_params_train_embed = num_trainable_params_embed
         logger.info("------ Number of embedding trainable parameters: {} ({})".format(num_trainable_params_embed, human_format(num_trainable_params_embed)))
+        
         num_trainable_params_other = num_trainable_params - num_trainable_params_embed
+        self.params.n_params_train_other = num_trainable_params_other
         logger.info("------ Number of other trainable parameters: {} ({})".format(num_trainable_params_other, human_format(num_trainable_params_other)))
         
         if params.optimizer == "adam":
