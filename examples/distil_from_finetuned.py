@@ -36,12 +36,16 @@ from pytorch_transformers import BertTokenizer, BertForSequenceClassification, B
 from distillation.distiller_from_finetuned import Distiller
 from distillation.utils import logger, init_gpu_params, set_seed, parse_str2bool
 from distillation.dataset import Dataset
+from distillation.tokenization_word import WordTokenizer
+from distillation.bi_rnn import BiRNNModel
 
 from utils_glue import processors, compute_metrics
 
 
 def main():
     parser = argparse.ArgumentParser(description="Training")
+    parser.add_argument("--student_type", default="BERT", type=str, required=False,
+                        help="Type of the student model. One of [BERT, LSTM].")    
 
     parser.add_argument("--data_dir", default=None, type=str, required=True,
                         help="The input data dir. Should contain the .tsv files (or other data files) for the task.")
@@ -160,6 +164,14 @@ def main():
                         help="Dimensionality of trained wordpiece/word embeddings to be used. Relevant \
                               if token_embeddings_from_teacher or use_word_vectors set to True).")
 
+    # LSTM-specific arguments
+    parser.add_argument("--fc_size", type=int, default=400,
+                        help="Fully connected layer size in LSTM student.")
+    parser.add_argument("--hidden_size", type=int, default=300,
+                        help="LSTM layer size.")
+    parser.add_argument("--mode", default="multichannel", type=str,
+                        help="Embedding mode. One of [rand, static, non-static, multichannel].")
+
     args = parser.parse_args()
    
     ## ARGS ##
@@ -186,6 +198,8 @@ def main():
     args.task_name = args.task_name.lower()
     if args.task_name not in processors:
         raise ValueError("Task not found: {}".format(args.task_name))
+    if args.student_type == "LSTM":
+        args.max_position_embeddings = -1
     args.max_seq_length = args.max_position_embeddings
 
     # Setup CUDA, GPU & distributed training
@@ -271,11 +285,12 @@ def main():
 
     def numericalise_sentence(args, sentence, tokenizer, cls_token="[CLS]", sep_token="[SEP]", pad_token_id=0):
         tokens = tokenizer.tokenize(sentence)
-        if len(tokens) > args.max_seq_length - 2:
+        if args.max_seq_length > 0 and len(tokens) > args.max_seq_length - 2:
             tokens = tokens[:(args.max_seq_length - 2)]
-        tokens = [cls_token] + tokens + [sep_token]
+        tokens = ([cls_token] if cls_token is not None else []) + tokens + ([sep_token] if cls_token is not None else [])
         token_ids = tokenizer.convert_tokens_to_ids(tokens)
-        token_ids += [pad_token_id] * (args.max_seq_length - len(token_ids))
+        if args.max_seq_length > 0:
+            token_ids += [pad_token_id] * (args.max_seq_length - len(token_ids))
         return token_ids
 
     def get_original_dev_dataset_fields(args):
@@ -395,22 +410,40 @@ def main():
                 example_numericalised = numericalise_sentence(args, sentence, tokenizer, 
                                                               cls_token=cls_token, sep_token=sep_token, 
                                                               pad_token_id=pad_token_id)
-                # print(example_numericalised)
                 example_logits = [float(getattr(example, logit_name)) for logit_name in logit_names]
                 transfer_dataset_numerical["sentence"].append(torch.LongTensor(example_numericalised))
                 transfer_dataset_numerical["logits"].append(torch.FloatTensor(example_logits))
-            transfer_dataset_numerical["sentence"] = torch.stack(transfer_dataset_numerical["sentence"])
-            transfer_dataset_numerical["logits"] = torch.stack(transfer_dataset_numerical["logits"])
             torch.save(transfer_dataset_numerical, transfer_dataset_numerical_file)
         else:
             logger.info("Loading the numerical transfer dataset from binary file: {}".format(transfer_dataset_numerical_file))
             transfer_dataset_numerical = torch.load(transfer_dataset_numerical_file, map_location=args.device)
-        transfer_dataset = TensorDataset(transfer_dataset_numerical["sentence"], transfer_dataset_numerical["logits"])
+        
+        # padding according to longest sentence when using LSTM
+        if not args.max_seq_length > 0:
+            lens = [len(sent) for sent in transfer_dataset_numerical["sentence"]]
+            transfer_dataset_numerical["sentence_length"] = torch.LongTensor(lens)
+            pad_token_id = tokenizer.convert_tokens_to_ids([tokenizer.pad_token_id])[0]
+            transfer_dataset_numerical = pad_sentences_to_longest(transfer_dataset_numerical, max(lens), pad_token_id)
+        else:
+            transfer_dataset_numerical["sentence_length"] = torch.LongTensor([0 for i in range(len(transfer_dataset_numerical["sentence"]))])
+
+        transfer_dataset_numerical["sentence"] = torch.stack(transfer_dataset_numerical["sentence"])
+        transfer_dataset_numerical["logits"] = torch.stack(transfer_dataset_numerical["logits"])
+        transfer_dataset = TensorDataset(transfer_dataset_numerical["sentence"], transfer_dataset_numerical["logits"], transfer_dataset_numerical["sentence_length"])
+        transfer_dataset_sampler = RandomSampler(transfer_dataset)
+        transfer_dataset = DataLoader(transfer_dataset, sampler=transfer_dataset_sampler, batch_size=args.batch_size)
+
         return transfer_dataset
+
+    def pad_sentences_to_longest(dataset, target_len, pad_token_id):
+        for i in range(len(dataset["sentence"])):
+            sent_len = len(dataset["sentence"][i])
+            padding = torch.LongTensor([pad_token_id]*(target_len - sent_len))
+            dataset["sentence"][i] = torch.cat((dataset["sentence"][i], padding))
+        return dataset
     
     def create_numerical_dev_set(args, dev_dataset_numerical_file, tokenizer):
         if not os.path.isfile(dev_dataset_numerical_file):
-            # logger.info("Creating the raw transfer set with teacher logits")
             fields = get_original_dev_dataset_fields(args)
             dev_dataset_raw_file = os.path.join(args.data_dir, "dev.tsv")
             dev_dataset_raw = TabularDataset(dev_dataset_raw_file, format="tsv", fields=fields, skip_header=has_header(args.task_name))
@@ -425,12 +458,26 @@ def main():
                                                               pad_token_id=pad_token_id)
                 dev_dataset_numerical["sentence"].append(torch.LongTensor(example_numericalised))
                 dev_dataset_numerical["label"].append(torch.LongTensor([int(example.label)]))
-            dev_dataset_numerical["sentence"] = torch.stack(dev_dataset_numerical["sentence"])
-            dev_dataset_numerical["label"] = torch.stack(dev_dataset_numerical["label"])
             torch.save(dev_dataset_numerical, dev_dataset_numerical_file)
         else:
             dev_dataset_numerical = torch.load(dev_dataset_numerical_file, map_location=args.device)
-        return dev_dataset_numerical
+        
+        # padding according to longest sentence when using LSTM
+        if not args.max_seq_length > 0:
+            lens = [len(sent) for sent in dev_dataset_numerical["sentence"]]
+            dev_dataset_numerical["sentence_length"] = torch.LongTensor(lens)
+            pad_token_id = tokenizer.convert_tokens_to_ids([tokenizer.pad_token_id])[0]
+            dev_dataset_numerical = pad_sentences_to_longest(dev_dataset_numerical, max(lens), pad_token_id)
+        else:
+            dev_dataset_numerical["sentence_length"] = torch.LongTensor([0 for i in range(len(dev_dataset_numerical["sentence"]))])
+            
+        dev_dataset_numerical["sentence"] = torch.stack(dev_dataset_numerical["sentence"])
+        dev_dataset_numerical["label"] = torch.stack(dev_dataset_numerical["label"])
+        dev_dataset = TensorDataset(dev_dataset_numerical["sentence"], dev_dataset_numerical["label"], dev_dataset_numerical["sentence_length"])
+        dev_dataset_sampler = SequentialSampler(dev_dataset)
+        dev_dataset = DataLoader(dev_dataset, sampler=dev_dataset_sampler, batch_size=args.per_gpu_eval_batch_size)
+        
+        return dev_dataset
 
     def evaluate_model(params: SimpleNamespace):
         # params contains:
@@ -438,12 +485,16 @@ def main():
         # - model
         # - task_name
         # - device
+        # - student type
         params.model.eval()
         preds, targets = None, None
         for batch in params.dataset:
             batch = tuple(t.to(params.device) for t in batch)
             with torch.no_grad():
-                logits = params.model(batch[0])[0]
+                if params.student_type == "BERT":
+                    logits = params.model(batch[0])[0]
+                else: # feed LSTM also with sentence lengths
+                    logits = params.model((batch[0], batch[2]))[0]
             labels_pred = logits.max(1)[1]
             if preds is None:
                 preds = labels_pred.detach().cpu().numpy()
@@ -468,10 +519,14 @@ def main():
                     writer.write(word + u'\n')
             torch.save(text_field.vocab.vectors, processed_word_vectors_file)
 
-        # create BertTokenizer using that vocab file name and config from teacher directory
-        special_tokens_map = {"unk_token": "<unk>", "pad_token": "<pad>", "cls_token": "<cls>", "sep_token": "<sep>"}
-        # TO-DO: de-activate sub-word tokenization (i.e. the WordPiece tokenizer in BertTokenizer), though it should work either way
-        tokenizer = BertTokenizer(vocab_file=vocab_file, do_lower_case=args.do_lower_case, max_len=args.max_seq_length)
+        # create tokenizer using that vocab file name and config from teacher directory
+        if args.student_type == "BERT":
+            special_tokens_map = {"unk_token": "<unk>", "pad_token": "<pad>", "cls_token": "<cls>", "sep_token": "<sep>"}
+        else:
+            special_tokens_map = {"unk_token": "<unk>", "pad_token": "<pad>"}
+
+        tokenizer = WordTokenizer(vocab_file=vocab_file, do_lower_case=args.do_lower_case, 
+                                  max_len=(args.max_seq_length if args.student_type == "BERT" else None))
         tokenizer.add_special_tokens(special_tokens_map)
 
         special_tok_ids = {}
@@ -483,12 +538,12 @@ def main():
         return tokenizer
 
     ## TRANSFER SET
-    transfer_dataset_numerical_file = os.path.join(args.data_dir, "train{}_{}_msl{}.bin".format(
+    transfer_dataset_numerical_file = os.path.join(args.data_dir, "train{}_{}_msl{}_{}.bin".format(
             "" if args.augmentation_type is None else ("_augmented-" + args.augmentation_type), 
-            "word" if args.use_word_vectors else "wordpiece", str(args.max_seq_length)))
+            "word" if args.use_word_vectors else "wordpiece", str(args.max_seq_length), args.student_type))
     # transfer_dataset_raw_file = os.path.join(args.data_dir, "train{}_scored.tsv".format(
     #         "" if args.augmentation_type is None else ("_augmented-" + args.augmentation_type)))
-    transfer_dataset_raw_file = os.path.join(args.data_dir, "cached_train_augmented-gpt-2_msl128_logits_bilstm.csv")
+    transfer_dataset_raw_file = os.path.join(args.data_dir, "cached_train_augmented-gpt-2_msl128_logits_bilstm-toy.csv")
     # STAGE 1: create and store sentence and logits as TSV - model-agnostic raw transfer set.
     if not os.path.isfile(transfer_dataset_numerical_file):
         transfer_dataset_raw = create_raw_transfer_set(args, transfer_dataset_raw_file)
@@ -499,10 +554,15 @@ def main():
     if args.use_word_vectors:
         vocab_file = os.path.join(args.data_dir, "transfer_set_vocab.txt")
         args.processed_word_vectors_file = os.path.join(args.data_dir, "word_vectors")
-        tokenizer = create_word_level_tokenizer(args, vocab_file, args.processed_word_vectors_file, transfer_dataset_raw, transfer_dataset_raw_file)
+        tokenizer = create_word_level_tokenizer(args, vocab_file, args.processed_word_vectors_file, 
+                                                transfer_dataset_raw, transfer_dataset_raw_file)
         args.vocab_size = len(tokenizer)
     else:
-        tokenizer = BertTokenizer.from_pretrained(args.teacher_name, do_lower_case=args.do_lower_case)
+        if args.student_type == "LSTM":
+            tokenizer = BertTokenizer.from_pretrained(args.teacher_name, do_lower_case=args.do_lower_case,
+                                                      sep_token=None, cls_token=None)
+        else:
+            tokenizer = BertTokenizer.from_pretrained(args.teacher_name, do_lower_case=args.do_lower_case)
         special_tok_ids = {}
         for tok_name, tok_symbol in tokenizer.special_tokens_map.items():
             idx = tokenizer.all_special_tokens.index(tok_symbol)
@@ -511,65 +571,87 @@ def main():
         args.special_tok_ids = special_tok_ids
 
     # STAGE 2: create and store numericalised transfer set (input ids, logits) as binary - model-specific transfer set.
-    transfer_dataset_numerical = create_numerical_transfer_set(args, transfer_dataset_numerical_file, tokenizer, transfer_dataset_raw)
-    transfer_dataset_sampler = RandomSampler(transfer_dataset_numerical)
-    transfer_dataset = DataLoader(transfer_dataset_numerical, sampler=transfer_dataset_sampler, batch_size=args.batch_size)
+    transfer_dataset = create_numerical_transfer_set(args, transfer_dataset_numerical_file, tokenizer, transfer_dataset_raw)
 
     ## DEV SET
     if args.evaluate_during_training:
         dev_dataset_numerical_file = os.path.join(args.data_dir, "dev_{}_msl{}.bin".format(
             "word" if args.use_word_vectors else "wordpiece", str(args.max_seq_length)))
-        dev_dataset_numerical = create_numerical_dev_set(args, dev_dataset_numerical_file, tokenizer)
-        dev_dataset = TensorDataset(dev_dataset_numerical["sentence"], dev_dataset_numerical["label"])
-        dev_dataset_sampler = SequentialSampler(dev_dataset)
-        dev_dataset = DataLoader(dev_dataset, sampler=dev_dataset_sampler, batch_size=args.per_gpu_eval_batch_size)
+        dev_dataset = create_numerical_dev_set(args, dev_dataset_numerical_file, tokenizer)
         evaluate_fn = evaluate_model
     else:
         dev_dataset = None
         evaluate_fn = None
 
     ## STUDENT
-
-    # specify embedding dimensionality only if it's different from the hidden size of the student
     args.use_learned_embeddings = args.token_embeddings_from_teacher or args.use_word_vectors
-    student_config = BertConfig(
-        vocab_size_or_config_json_file=args.vocab_size,
-        hidden_size=args.dim,
-        num_hidden_layers=args.n_layers,
-        num_attention_heads=args.n_heads,
-        intermediate_size=args.hidden_dim,
-        hidden_dropout_prob=args.dropout,
-        attention_probs_dropout_prob=args.attention_dropout,
-        max_position_embeddings=args.max_position_embeddings,
-        hidden_act=args.activation,
-        initializer_range=0.02,
-        token_embedding_dimensionality=args.token_embedding_dimensionality,
-        token_type_embedding_dimensionality=args.token_type_embedding_dimensionality,
-    )    
+    args.n_classes = get_n_classes(args.task_name)
+
+    if args.student_type == "LSTM":
+        torch.cuda.deterministic = True
+        student = BiRNNModel(args)
+    else:
+        # specify embedding dimensionality only if it's different from the hidden size of the student
+        student_config = BertConfig(
+            vocab_size_or_config_json_file=args.vocab_size,
+            hidden_size=args.dim,
+            num_hidden_layers=args.n_layers,
+            num_attention_heads=args.n_heads,
+            intermediate_size=args.hidden_dim,
+            hidden_dropout_prob=args.dropout,
+            attention_probs_dropout_prob=args.attention_dropout,
+            max_position_embeddings=args.max_position_embeddings,
+            hidden_act=args.activation,
+            initializer_range=args.initializer_range,
+            token_embedding_dimensionality=args.token_embedding_dimensionality,
+            token_type_embedding_dimensionality=args.token_type_embedding_dimensionality,
+        )    
     # Either load full learned student model
     if args.from_pretrained != "none":
         logger.info("Loading pre-trained student from: {}".format(args.from_pretrained))
-        student = BertForSequenceClassification.from_pretrained(args.from_pretrained, config=student_config)
+        if args.student_type == "LSTM":
+            state_dict = torch.load(args.from_pretrained, map_location=args.device)
+            param_keys = student.load_state_dict(state_dict, strict=False)
+            loaded_params = [p for p in student.state_dict() if p not in param_keys[0]]
+            num_loaded_params = sum([student.state_dict()[p].numel() for p in loaded_params])
+            num_all_params = sum([p.numel() for n, p in student.state_dict().items()])
+            print("Loaded {} parameters (out of total {}) into: {}".format(num_loaded_params, num_all_params, loaded_params))
+        else:
+            student = BertForSequenceClassification.from_pretrained(args.from_pretrained, config=student_config)
     # Or create student initialised from scratch, or with only embedding layer learned
     else:
-        student = BertForSequenceClassification(student_config)
-
-        if args.use_learned_embeddings:          
+        if args.student_type == "BERT":
+            student = BertForSequenceClassification(student_config)
             token_type_embedding_name = "bert.embeddings.token_type_embeddings.weight"
-            token_embedding_name = "bert.embeddings.word_embeddings.weight"
-            
+            token_embedding_names = ["bert.embeddings.word_embeddings.weight"]
+        else:
+            # token_type_embedding_name = None
+            if args.mode == "rand":
+                token_embedding_names = []
+            elif args.mode == "static":
+                token_embedding_names = ["static_embed.weight"]
+            elif args.mode == "non-static":
+                token_embedding_names = ["non_static_embed.weight"]
+            elif args.mode == "multichannel":
+                token_embedding_names = ["non_static_embed.weight", "static_embed.weight"]
+
+        if args.use_learned_embeddings:
+            embeddings_to_load = {}
+
             # retrieve learned token type embeddings to be used with learned wordpiece/word embeddings
-            logger.info("Retrieving learned token type embeddings from the teacher")
-            token_type_embeddings_file = os.path.join(args.teacher_name, "token_type_embeddings_teacher_h{}.pt"\
-                .format(args.token_type_embedding_dimensionality))
-            if not os.path.isfile(token_type_embeddings_file):
-                teacher_state_dict = torch.load(os.path.join(args.teacher_name, "pytorch_model.bin"), map_location=torch.device("cpu"))
-                embedding_weights = teacher_state_dict[token_type_embedding_name]
-                assert args.token_type_embedding_dimensionality == embedding_weights.shape[-1]
-                token_type_embedding_state_dict = {token_type_embedding_name: embedding_weights}
-                torch.save(token_type_embedding_state_dict, token_type_embeddings_file)
-            else:
-                token_type_embedding_state_dict = torch.load(token_type_embeddings_file, map_location=args.device)
+            if args.student_type == "BERT":
+                logger.info("Retrieving learned token type embeddings from the teacher")
+                token_type_embeddings_file = os.path.join(args.teacher_name, "token_type_embeddings_teacher_h{}.pt"\
+                    .format(args.token_type_embedding_dimensionality))
+                if not os.path.isfile(token_type_embeddings_file):
+                    teacher_state_dict = torch.load(os.path.join(args.teacher_name, "pytorch_model.bin"), map_location=torch.device("cpu"))
+                    embedding_weights = teacher_state_dict[token_type_embedding_name]
+                    assert args.token_type_embedding_dimensionality == embedding_weights.shape[-1]
+                    token_type_embedding_state_dict = {token_type_embedding_name: embedding_weights}
+                    torch.save(token_type_embedding_state_dict, token_type_embeddings_file)
+                else:
+                    token_type_embedding_state_dict = torch.load(token_type_embeddings_file, map_location=args.device)
+                embeddings_to_load[token_type_embedding_name] = token_type_embedding_state_dict[token_type_embedding_name]
 
             # retrieve learned wordpiece embeddings from teacher model
             if args.token_embeddings_from_teacher:
@@ -577,23 +659,28 @@ def main():
                 embeddings_file = os.path.join(args.teacher_name, "wordpiece_embeddings_teacher_h{}.pt".format(args.token_embedding_dimensionality))
                 if not os.path.exists(embeddings_file):
                     teacher_state_dict = torch.load(os.path.join(args.teacher_name, "pytorch_model.bin"), map_location=torch.device("cpu"))
-                    embedding_weights = teacher_state_dict[token_embedding_name]
-                    token_embedding_state_dict = {token_embedding_name: embedding_weights}
+                    embedding_weights = teacher_state_dict["bert.embeddings.word_embeddings.weight"]
+                    token_embedding_state_dict = {"bert.embeddings.word_embeddings.weight": embedding_weights}
                     assert args.token_embedding_dimensionality == embedding_weights.shape[-1]
                     torch.save(token_embedding_state_dict, embeddings_file)
                 else:
                     token_embedding_state_dict = torch.load(embeddings_file, map_location=args.device)
+                for token_embedding_name in token_embedding_names:
+                    embeddings_to_load[token_embedding_name] = token_embedding_state_dict["bert.embeddings.word_embeddings.weight"]
 
             # retrieve learned word embeddings, e.g. word2vec
             elif args.use_word_vectors:
                 logger.info("Initialising student word embedding parameters from learned word vectors")
                 # add to the word vectors randomly initialised embeddings for any additional special tokens
                 word_embeddings = torch.load(args.processed_word_vectors_file, map_location=args.device)
-                word_embeddings = torch.cat((word_embeddings, 
-                                             torch.FloatTensor(len(tokenizer.added_tokens_encoder), word_embeddings.shape[1]).uniform_(-0.25, 0.25).to(args.device)))
-                token_embedding_state_dict = {token_embedding_name: word_embeddings}
+                # add special token embeddings for BERT
+                if args.student_type == "BERT":
+                    word_embeddings = torch.cat((word_embeddings, 
+                                                 torch.FloatTensor(len(tokenizer.added_tokens_encoder), word_embeddings.shape[1])\
+                                                 .uniform_(-0.25, 0.25).to(args.device)))
+                for token_embedding_name in token_embedding_names:
+                    embeddings_to_load[token_embedding_name] = word_embeddings
 
-            embeddings_to_load = {**token_type_embedding_state_dict, **token_embedding_state_dict}
             param_keys = student.load_state_dict(embeddings_to_load, strict=False)
             loaded_params = [p for p in student.state_dict() if p not in param_keys[0]]
             num_loaded_params = sum([student.state_dict()[p].numel() for p in loaded_params])
@@ -609,10 +696,9 @@ def main():
                           dataset_eval=dev_dataset,
                           student=student,
                           evaluate_fn=evaluate_fn,
-                          student_type="BERT")
+                          student_type=args.student_type)
     distiller.train()
     logger.info("Let's go get some drinks.")
-
 
 if __name__ == "__main__":
     main()

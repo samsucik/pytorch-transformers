@@ -31,6 +31,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import AdamW, Adadelta
+from torch.utils.data import DataLoader
 
 from pytorch_transformers import WarmupLinearSchedule, WarmupConstantSchedule
 from examples.distillation.utils import logger
@@ -48,8 +49,8 @@ class Distiller:
     def __init__(
         self,
         params,
-        dataset_train, # type Dataset (if BERT) or torchtext.data.Dataset (if LSTM)
-        dataset_eval, # type Dataset (if BERT) or torchtext.data.Dataset (if LSTM)
+        dataset_train: DataLoader,
+        dataset_eval: DataLoader,
         student: nn.Module,
         evaluate_fn=None,
         student_type="BERT" # one of BERT, LSTM
@@ -149,7 +150,7 @@ class Distiller:
         """
         logger.info("--- Initializing Data Iterator")
         set_seed(self.params)
-        if self.student_type == "LSTM": self.dataset_train.init_epoch()
+        # if self.student_type == "LSTM": self.dataset_train.init_epoch()
         self.data_iterator = tqdm(self.dataset_train, desc="Iteration", total=(self.params.max_steps % self.num_steps_epoch 
             if self.params.max_steps > 0 else None))
 
@@ -167,7 +168,7 @@ class Distiller:
                 self.step(batch)
 
                 if self.n_total_iter % self.params.log_interval == 0 and self.params.evaluate_during_training:
-                    eval_params = SimpleNamespace(dataset=self.dataset_eval, model=self.student, \
+                    eval_params = SimpleNamespace(dataset=self.dataset_eval, model=self.student, student=self.student_type, \
                                                   task_name=self.params.task_name, device=self.params.device)
                     results = self.evaluate_fn(eval_params)            
                     dev_score_tuple = [(name, score) for name, score in results.items() if name != "additional"][0]
@@ -197,7 +198,7 @@ class Distiller:
                 break
 
             self.data_iterator.close()
-            if self.student_type == "LSTM": self.dataset_train.init_epoch()
+            # if self.student_type == "LSTM": self.dataset_train.init_epoch()
             self.data_iterator = tqdm(self.dataset_train, desc="Iteration")
             
             logger.info("--- Ending epoch {}/{}".format(self.epoch, self.n_epochs-1))
@@ -219,17 +220,14 @@ class Distiller:
             n_sequences = batch[0].size(0)
         else:
             # TODO: convert batch to this device?
-            logits = self.student(batch.sentence)
-            labels = batch.label
-            n_sequences = batch.sentence[1].size(0) # batch.sentence is: (sents, sent_lens)
+            logits = self.student((batch[0], batch[2])) # batch[0] = sentence, batch[2] = sentence length
+            n_sequences = batch[0].size(0)
 
         if self.use_hard_labels: # currently broken for BERT as labels are not included in the transfer set
-            loss = self.ce_simple_loss_fct(logits, labels)
+            # loss = self.ce_simple_loss_fct(logits, labels)
+            raise Error("Using hard labels is not currently supported, you should set: use_hard_labels=False.")
         else:
-            if self.student_type == "BERT":
-                teacher_logits = batch[1]
-            else:
-                teacher_logits = torch.stack((batch.logits_0, batch.logits_1), 1) # TODO: change for n_classes != 2
+            teacher_logits = batch[1]
             assert logits.size() == teacher_logits.size()
 
             loss_ce = self.alpha_ce * self.ce_loss_fct(F.log_softmax(logits/self.temperature, dim=-1),
