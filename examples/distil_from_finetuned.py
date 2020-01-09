@@ -423,7 +423,7 @@ def main():
             lens = [len(sent) for sent in transfer_dataset_numerical["sentence"]]
             transfer_dataset_numerical["sentence_length"] = torch.LongTensor(lens)
             pad_token_id = tokenizer.convert_tokens_to_ids([tokenizer.pad_token_id])[0]
-            transfer_dataset_numerical = pad_sentences_to_longest(transfer_dataset_numerical, max(lens), pad_token_id)
+            transfer_dataset_numerical = pad_sentences_to_longest(args, transfer_dataset_numerical, max(lens), pad_token_id)
         else:
             transfer_dataset_numerical["sentence_length"] = torch.LongTensor([0 for i in range(len(transfer_dataset_numerical["sentence"]))])
 
@@ -435,11 +435,11 @@ def main():
 
         return transfer_dataset
 
-    def pad_sentences_to_longest(dataset, target_len, pad_token_id):
+    def pad_sentences_to_longest(args, dataset, target_len, pad_token_id):
         for i in range(len(dataset["sentence"])):
             sent_len = len(dataset["sentence"][i])
             padding = torch.LongTensor([pad_token_id]*(target_len - sent_len))
-            dataset["sentence"][i] = torch.cat((dataset["sentence"][i], padding))
+            dataset["sentence"][i] = torch.cat((dataset["sentence"][i].to(args.device), padding.to(args.device))).to(args.device)
         return dataset
     
     def create_numerical_dev_set(args, dev_dataset_numerical_file, tokenizer):
@@ -467,7 +467,7 @@ def main():
             lens = [len(sent) for sent in dev_dataset_numerical["sentence"]]
             dev_dataset_numerical["sentence_length"] = torch.LongTensor(lens)
             pad_token_id = tokenizer.convert_tokens_to_ids([tokenizer.pad_token_id])[0]
-            dev_dataset_numerical = pad_sentences_to_longest(dev_dataset_numerical, max(lens), pad_token_id)
+            dev_dataset_numerical = pad_sentences_to_longest(args, dev_dataset_numerical, max(lens), pad_token_id)
         else:
             dev_dataset_numerical["sentence_length"] = torch.LongTensor([0 for i in range(len(dev_dataset_numerical["sentence"]))])
             
@@ -494,7 +494,7 @@ def main():
                 if params.student_type == "BERT":
                     logits = params.model(batch[0])[0]
                 else: # feed LSTM also with sentence lengths
-                    logits = params.model((batch[0], batch[2]))[0]
+                    logits = params.model((batch[0], batch[2]))
             labels_pred = logits.max(1)[1]
             if preds is None:
                 preds = labels_pred.detach().cpu().numpy()
@@ -543,7 +543,7 @@ def main():
             "word" if args.use_word_vectors else "wordpiece", str(args.max_seq_length), args.student_type))
     # transfer_dataset_raw_file = os.path.join(args.data_dir, "train{}_scored.tsv".format(
     #         "" if args.augmentation_type is None else ("_augmented-" + args.augmentation_type)))
-    transfer_dataset_raw_file = os.path.join(args.data_dir, "cached_train_augmented-gpt-2_msl128_logits_bilstm-toy.csv")
+    transfer_dataset_raw_file = os.path.join(args.data_dir, "cached_train_augmented-gpt-2_msl128_logits_bilstm.csv")
     # STAGE 1: create and store sentence and logits as TSV - model-agnostic raw transfer set.
     if not os.path.isfile(transfer_dataset_numerical_file):
         transfer_dataset_raw = create_raw_transfer_set(args, transfer_dataset_raw_file)

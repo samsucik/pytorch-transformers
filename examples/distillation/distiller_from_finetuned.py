@@ -168,7 +168,7 @@ class Distiller:
                 self.step(batch)
 
                 if self.n_total_iter % self.params.log_interval == 0 and self.params.evaluate_during_training:
-                    eval_params = SimpleNamespace(dataset=self.dataset_eval, model=self.student, student=self.student_type, \
+                    eval_params = SimpleNamespace(dataset=self.dataset_eval, model=self.student, student_type=self.student_type, \
                                                   task_name=self.params.task_name, device=self.params.device)
                     results = self.evaluate_fn(eval_params)            
                     dev_score_tuple = [(name, score) for name, score in results.items() if name != "additional"][0]
@@ -214,12 +214,11 @@ class Distiller:
         One optimization step: forward of student, backward on the loss (for gradient accumulation),
         and possibly a parameter update (depending on the gradient accumulation).
         """
+        batch = tuple(t.to(self.params.device) for t in batch)
         if self.student_type == "BERT":
-            batch = tuple(t.to(self.params.device) for t in batch)
             logits = self.student(input_ids=batch[0])[0]
             n_sequences = batch[0].size(0)
         else:
-            # TODO: convert batch to this device?
             logits = self.student((batch[0], batch[2])) # batch[0] = sentence, batch[2] = sentence length
             n_sequences = batch[0].size(0)
 
