@@ -621,12 +621,22 @@ def main():
             student = BertForSequenceClassification.from_pretrained(args.from_pretrained, config=student_config)
     # Or create student initialised from scratch, or with only embedding layer learned
     else:
+        teacher_token_type_embedding_name = "bert.embeddings.token_type_embeddings.weight"
+        teacher_token_embedding_name = "bert.embeddings.word_embeddings.weight"
         if args.student_type == "BERT":
             student = BertForSequenceClassification(student_config)
-            token_type_embedding_name = "bert.embeddings.token_type_embeddings.weight"
-            token_embedding_names = ["bert.embeddings.word_embeddings.weight"]
+            if args.mode == "rand":
+                token_embedding_names = []
+            elif args.mode == "static":
+                token_embedding_names = ["bert.embeddings.token_embeddings_static.weight"]
+                token_type_embedding_names = ["bert.embeddings.token_type_embeddings_static.weight"]
+            elif args.mode == "non-static":
+                token_embedding_names = ["bert.embeddings.token_embeddings_non_static.weight"]
+                token_type_embedding_names = ["bert.embeddings.token_type_embeddings_non_static.weight"]
+            elif args.mode == "multichannel":
+                token_embedding_names = ["bert.embeddings.token_embeddings_non_static.weight", "bert.embeddings.token_embeddings_static.weight"]
+                token_type_embedding_names = ["bert.embeddings.token_type_embeddings_non_static.weight", "bert.embeddings.token_type_embeddings_static.weight"]
         else:
-            # token_type_embedding_name = None
             if args.mode == "rand":
                 token_embedding_names = []
             elif args.mode == "static":
@@ -646,13 +656,14 @@ def main():
                     .format(args.token_type_embedding_dimensionality))
                 if not os.path.isfile(token_type_embeddings_file):
                     teacher_state_dict = torch.load(os.path.join(args.teacher_name, "pytorch_model.bin"), map_location=torch.device("cpu"))
-                    embedding_weights = teacher_state_dict[token_type_embedding_name]
+                    embedding_weights = teacher_state_dict[teacher_token_type_embedding_name]
                     assert args.token_type_embedding_dimensionality == embedding_weights.shape[-1]
-                    token_type_embedding_state_dict = {token_type_embedding_name: embedding_weights}
+                    token_type_embedding_state_dict = {teacher_token_type_embedding_name: embedding_weights}
                     torch.save(token_type_embedding_state_dict, token_type_embeddings_file)
                 else:
                     token_type_embedding_state_dict = torch.load(token_type_embeddings_file, map_location=args.device)
-                embeddings_to_load[token_type_embedding_name] = token_type_embedding_state_dict[token_type_embedding_name]
+                for name in token_type_embedding_names:
+                    embeddings_to_load[name] = token_type_embedding_state_dict[teacher_token_type_embedding_name]
 
             # retrieve learned wordpiece embeddings from teacher model
             if args.token_embeddings_from_teacher:
@@ -660,14 +671,14 @@ def main():
                 embeddings_file = os.path.join(args.teacher_name, "wordpiece_embeddings_teacher_h{}.pt".format(args.token_embedding_dimensionality))
                 if not os.path.exists(embeddings_file):
                     teacher_state_dict = torch.load(os.path.join(args.teacher_name, "pytorch_model.bin"), map_location=torch.device("cpu"))
-                    embedding_weights = teacher_state_dict["bert.embeddings.word_embeddings.weight"]
-                    token_embedding_state_dict = {"bert.embeddings.word_embeddings.weight": embedding_weights}
+                    embedding_weights = teacher_state_dict[teacher_token_embedding_name]
+                    token_embedding_state_dict = {teacher_token_embedding_name: embedding_weights}
                     assert args.token_embedding_dimensionality == embedding_weights.shape[-1]
                     torch.save(token_embedding_state_dict, embeddings_file)
                 else:
                     token_embedding_state_dict = torch.load(embeddings_file, map_location=args.device)
                 for token_embedding_name in token_embedding_names:
-                    embeddings_to_load[token_embedding_name] = token_embedding_state_dict["bert.embeddings.word_embeddings.weight"]
+                    embeddings_to_load[token_embedding_name] = token_embedding_state_dict[teacher_token_embedding_name]
 
             # retrieve learned word embeddings, e.g. word2vec
             elif args.use_word_vectors:
