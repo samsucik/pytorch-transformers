@@ -89,6 +89,7 @@ class BertConfig(PretrainedConfig):
                  layer_norm_eps=1e-12,
                  token_embedding_dimensionality=None,
                  token_type_embedding_dimensionality=None,
+                 embedding_mode=None,
                  **kwargs):
         super(BertConfig, self).__init__(**kwargs)
         if isinstance(vocab_size_or_config_json_file, str) or (sys.version_info[0] == 2
@@ -116,6 +117,15 @@ class BertConfig(PretrainedConfig):
             # then the embeddings are dimensionality-reduced using a linear layer (to match the hidden size).
             self.token_embedding_dimensionality = token_embedding_dimensionality
             self.token_type_embedding_dimensionality = token_type_embedding_dimensionality
+
+            # Only relevant when embedding layer is to be frozen (after being initialised from trained
+            # parameters), i.e. mode=static, or when two versions of embeddings (frozen and unfrozen)
+            # are to be used in parallel, i.e. mode=multichannel. The default is the standard scenario
+            # with embedding layer unfrozen (trainable), i.e. mode=non-static (equivalent to mode=None).
+            if embedding_mode is not None and embedding_mode not in ["static", "non-static", "multichannel"]:
+                raise ValueError("EMbedding mode must be one of [static, non-static, multichannel], not {}"\
+                    .format(embedding_mode))
+            self.embedding_mode = embedding_mode
         else:
             raise ValueError("First argument must be either a vocabulary size (int)"
                              " or the path to a pretrained model config file (str)")

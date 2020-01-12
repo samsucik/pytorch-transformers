@@ -160,9 +160,27 @@ class BertEmbeddings(nn.Module):
             self.has_token_type_embedding_dimensionality_reduction_layer = False
             token_type_embedding_dimensionality = config.hidden_size
 
-        self.word_embeddings = nn.Embedding(config.vocab_size, token_embedding_dimensionality, padding_idx=0)
+        # Create frozen/unfrozen embeddings based on the desired embedding mode.
+        self.embedding_mode = config.embedding_mode
+        if self.embedding_mode is None or self.embedding_mode == "non-static" or self.embedding_mode == "multichannel":
+            self.token_embeddings_non_static = nn.Embedding(config.vocab_size, token_embedding_dimensionality, padding_idx=0)
+            self.token_type_embeddings_non_static = nn.Embedding(config.type_vocab_size, token_type_embedding_dimensionality)
+            self.token_embeddings_non_static.weight.requires_grad = True
+            self.token_type_embeddings_non_static.weight.requires_grad = True
+        if self.embedding_mode is not None and self.embedding_mode in ["static", "multichannel"]:
+            self.token_embeddings_static = nn.Embedding(config.vocab_size, token_embedding_dimensionality, padding_idx=0)
+            self.token_type_embeddings_static = nn.Embedding(config.type_vocab_size, token_type_embedding_dimensionality)
+            self.token_embeddings_static.weight.requires_grad = False
+            self.token_type_embeddings_static.weight.requires_grad = False
         self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.hidden_size)
-        self.token_type_embeddings = nn.Embedding(config.type_vocab_size, token_type_embedding_dimensionality)
+        
+        # In the multichannel embedding mode, the frozen+unfrozen embeddings lead to twice the original
+        # embedding dimensionality. This is then brought down to BERT's hidden size with a linear layer.
+        if self.embedding_mode is not None and self.embedding_mode == "multichannel":
+            token_embedding_dimensionality *= 2
+            self.has_token_embedding_dimensionality_reduction_layer = True
+            token_type_embedding_dimensionality *= 2
+            self.has_token_type_embedding_dimensionality_reduction_layer = True
 
         if self.has_token_embedding_dimensionality_reduction_layer:
             self.token_embedding_dimensionality_reduction = nn.Linear(token_embedding_dimensionality, config.hidden_size)
@@ -182,16 +200,27 @@ class BertEmbeddings(nn.Module):
         if token_type_ids is None:
             token_type_ids = torch.zeros_like(input_ids)
 
-        words_embeddings = self.word_embeddings(input_ids)
+        if self.embedding_mode is None or self.embedding_mode == "non-static":
+            token_embeddings = self.token_embeddings_non_static(input_ids)
+            token_type_embeddings = self.token_type_embeddings_non_static(token_type_ids)
+        elif self.embedding_mode == "static":
+            token_embeddings = self.token_embeddings_static(input_ids)
+            token_type_embeddings = self.token_type_embeddings_static(token_type_ids)
+        else:
+            static = self.token_embeddings_static(input_ids)
+            non_static = self.token_embeddings_non_static(input_ids)
+            token_embeddings = torch.cat((static, non_static), dim=2)
+            static = self.token_type_embeddings_static(token_type_ids)
+            non_static = self.token_type_embeddings_non_static(token_type_ids)
+            token_type_embeddings = torch.cat((static, non_static), dim=2)
         position_embeddings = self.position_embeddings(position_ids)
-        token_type_embeddings = self.token_type_embeddings(token_type_ids)
 
         if self.has_token_embedding_dimensionality_reduction_layer:
-            words_embeddings = self.token_embedding_dimensionality_reduction(words_embeddings)
+            token_embeddings = self.token_embedding_dimensionality_reduction(token_embeddings)
         if self.has_token_type_embedding_dimensionality_reduction_layer:
             token_type_embeddings = self.token_type_embedding_dimensionality_reduction(token_type_embeddings)
         
-        embeddings = words_embeddings + token_type_embeddings + position_embeddings
+        embeddings = token_embeddings + token_type_embeddings + position_embeddings
         embeddings = self.LayerNorm(embeddings)
         embeddings = self.dropout(embeddings)
         return embeddings
@@ -594,10 +623,10 @@ class BertModel(BertPreTrainedModel):
         self.init_weights()
 
     def _resize_token_embeddings(self, new_num_tokens):
-        old_embeddings = self.embeddings.word_embeddings
+        old_embeddings = self.embeddings.token_embeddings
         new_embeddings = self._get_resized_embeddings(old_embeddings, new_num_tokens)
-        self.embeddings.word_embeddings = new_embeddings
-        return self.embeddings.word_embeddings
+        self.embeddings.token_embeddings = new_embeddings
+        return self.embeddings.token_embeddings
 
     def _prune_heads(self, heads_to_prune):
         """ Prunes heads of the model.
@@ -708,7 +737,7 @@ class BertForPreTraining(BertPreTrainedModel):
             Export to TorchScript can't handle parameter sharing so we are cloning them instead.
         """
         self._tie_or_clone_weights(self.cls.predictions.decoder,
-                                   self.bert.embeddings.word_embeddings)
+                                   self.bert.embeddings.token_embeddings)
 
     def forward(self, input_ids, attention_mask=None, token_type_ids=None, position_ids=None, head_mask=None,
                 masked_lm_labels=None, next_sentence_label=None):
@@ -780,7 +809,7 @@ class BertForMaskedLM(BertPreTrainedModel):
             Export to TorchScript can't handle parameter sharing so we are cloning them instead.
         """
         self._tie_or_clone_weights(self.cls.predictions.decoder,
-                                   self.bert.embeddings.word_embeddings)
+                                   self.bert.embeddings.token_embeddings)
 
     def forward(self, input_ids, attention_mask=None, token_type_ids=None, position_ids=None, head_mask=None,
                 masked_lm_labels=None):
