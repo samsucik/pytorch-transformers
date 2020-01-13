@@ -323,7 +323,8 @@ def main():
         logit_fields = [("logit_{}".format(i), Field(sequential=False, use_vocab=False, batch_first=True, dtype=torch.float)) 
                         for i in range(n_classes)]
 
-        return [("label", None), ("sentence", text_field)] + logit_fields
+        # return [("label", None), ("sentence", text_field)] + logit_fields
+        return [("sentence", text_field)] + logit_fields
 
     def create_raw_transfer_set(args, cached_dataset_file):
         if not os.path.exists(cached_dataset_file):
@@ -343,13 +344,13 @@ def main():
             combined_transfer_set.examples += augmentation_set.examples
 
             # TO-DO delete once everything works
-            # combined_transfer_set.examples = combined_transfer_set.examples[:4]
+            combined_transfer_set.examples = combined_transfer_set.examples[:10]
 
             # numericalise and pad the sentences
             tokenizer_teacher = BertTokenizer.from_pretrained(args.teacher_name, do_lower_case=args.do_lower_case)
             numericalised_transfer_set = []
             cls_token, sep_token, pad_token = tokenizer_teacher.cls_token, tokenizer_teacher.sep_token, tokenizer_teacher.pad_token
-            print(cls_token, sep_token, pad_token)
+            # print(cls_token, sep_token, pad_token)
             pad_token_id = tokenizer_teacher.convert_tokens_to_ids([pad_token])[0]
             # print(pad_token_id)
             # exit(0)
@@ -366,9 +367,11 @@ def main():
             # add teacher logits
             teacher = BertForSequenceClassification.from_pretrained(args.teacher_name) # take outputs[1] for the logits
             teacher.to(args.device)
+            # print(teacher)
+            # exit(0)
             logits = add_logits(args, teacher, numericalised_transfer_set)
 
-            # """
+            """
             # write sentences and logits into TSV
             with open(cached_dataset_file, "w") as writer:
                 n_logits = logits.shape[1]
@@ -379,13 +382,12 @@ def main():
                     writer.write("{}\t".format(ex.sentence) + soft_labels_str + "\n")
             """
             n_logits = logits.shape[1]
-            # writer.write("sentence\t" + "\t".join(["logit_{}".format(i) for i in range(n_logits)]) + "\n")
             for i, ex in enumerate(combined_transfer_set.examples):
                 soft_labels = logits[i, :].cpu().numpy()
                 soft_labels_str = "\t".join([str(logit) for logit in soft_labels])
-                print("{}\t".format(ex.sentence) + soft_labels_str + "\n")
+                print("{}\t".format(ex.sentence) + soft_labels_str)
             exit(0)
-            """
+            # """
         
         # read the dataset from TSV
         logger.info("Loading raw transfer set from TSV file {}".format(cached_dataset_file))
@@ -541,9 +543,9 @@ def main():
     transfer_dataset_numerical_file = os.path.join(args.data_dir, "train{}_{}_msl{}_{}.bin".format(
             "" if args.augmentation_type is None else ("_augmented-" + args.augmentation_type), 
             "word" if args.use_word_vectors else "wordpiece", str(args.max_seq_length), args.student_type))
-    # transfer_dataset_raw_file = os.path.join(args.data_dir, "train{}_scored.tsv".format(
-    #         "" if args.augmentation_type is None else ("_augmented-" + args.augmentation_type)))
     transfer_dataset_raw_file = os.path.join(args.data_dir, "cached_train_augmented-gpt-2_msl128_logits_bilstm-toy.csv")
+    transfer_dataset_raw_file = os.path.join(args.data_dir, "train{}_scored.tsv".format(
+            "" if args.augmentation_type is None else ("_augmented-" + args.augmentation_type)))
     # STAGE 1: create and store sentence and logits as TSV - model-agnostic raw transfer set.
     if not os.path.isfile(transfer_dataset_numerical_file):
         transfer_dataset_raw = create_raw_transfer_set(args, transfer_dataset_raw_file)
@@ -572,6 +574,7 @@ def main():
 
     # STAGE 2: create and store numericalised transfer set (input ids, logits) as binary - model-specific transfer set.
     transfer_dataset = create_numerical_transfer_set(args, transfer_dataset_numerical_file, tokenizer, transfer_dataset_raw)
+    # exit(0)
 
     ## DEV SET
     if args.evaluate_during_training:
@@ -628,14 +631,14 @@ def main():
             if args.mode == "rand":
                 token_embedding_names = []
             elif args.mode == "static":
-                token_embedding_names = ["bert.embeddings.token_embeddings_static.weight"]
+                token_embedding_names = ["bert.embeddings.word_embeddings_static.weight"]
                 token_type_embedding_names = ["bert.embeddings.token_type_embeddings_static.weight"]
             elif args.mode == "non-static":
-                token_embedding_names = ["bert.embeddings.token_embeddings_non_static.weight"]
-                token_type_embedding_names = ["bert.embeddings.token_type_embeddings_non_static.weight"]
+                token_embedding_names = ["bert.embeddings.word_embeddings.weight"]
+                token_type_embedding_names = ["bert.embeddings.token_type_embeddings.weight"]
             elif args.mode == "multichannel":
-                token_embedding_names = ["bert.embeddings.token_embeddings_non_static.weight", "bert.embeddings.token_embeddings_static.weight"]
-                token_type_embedding_names = ["bert.embeddings.token_type_embeddings_non_static.weight", "bert.embeddings.token_type_embeddings_static.weight"]
+                token_embedding_names = ["bert.embeddings.word_embeddings.weight", "bert.embeddings.word_embeddings_static.weight"]
+                token_type_embedding_names = ["bert.embeddings.token_type_embeddings.weight", "bert.embeddings.token_type_embeddings_static.weight"]
         else:
             if args.mode == "rand":
                 token_embedding_names = []

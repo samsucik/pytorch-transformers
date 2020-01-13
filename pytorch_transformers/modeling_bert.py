@@ -163,14 +163,16 @@ class BertEmbeddings(nn.Module):
         # Create frozen/unfrozen embeddings based on the desired embedding mode.
         self.embedding_mode = config.embedding_mode
         if self.embedding_mode is None or self.embedding_mode == "non-static" or self.embedding_mode == "multichannel":
-            self.token_embeddings_non_static = nn.Embedding(config.vocab_size, token_embedding_dimensionality, padding_idx=0)
-            self.token_type_embeddings_non_static = nn.Embedding(config.type_vocab_size, token_type_embedding_dimensionality)
-            self.token_embeddings_non_static.weight.requires_grad = True
-            self.token_type_embeddings_non_static.weight.requires_grad = True
+            # token_embeddings_non_static
+            self.word_embeddings = nn.Embedding(config.vocab_size, token_embedding_dimensionality, padding_idx=0)
+            self.word_embeddings.weight.requires_grad = True
+            # token_type_embeddings_non_static
+            self.token_type_embeddings = nn.Embedding(config.type_vocab_size, token_type_embedding_dimensionality)
+            self.token_type_embeddings.weight.requires_grad = True
         if self.embedding_mode is not None and self.embedding_mode in ["static", "multichannel"]:
-            self.token_embeddings_static = nn.Embedding(config.vocab_size, token_embedding_dimensionality, padding_idx=0)
+            self.word_embeddings_static = nn.Embedding(config.vocab_size, token_embedding_dimensionality, padding_idx=0)
             self.token_type_embeddings_static = nn.Embedding(config.type_vocab_size, token_type_embedding_dimensionality)
-            self.token_embeddings_static.weight.requires_grad = False
+            self.word_embeddings_static.weight.requires_grad = False
             self.token_type_embeddings_static.weight.requires_grad = False
         self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.hidden_size)
         
@@ -201,17 +203,17 @@ class BertEmbeddings(nn.Module):
             token_type_ids = torch.zeros_like(input_ids)
 
         if self.embedding_mode is None or self.embedding_mode == "non-static":
-            token_embeddings = self.token_embeddings_non_static(input_ids)
-            token_type_embeddings = self.token_type_embeddings_non_static(token_type_ids)
+            token_embeddings = self.word_embeddings(input_ids)
+            token_type_embeddings = self.token_type_embeddings(token_type_ids)
         elif self.embedding_mode == "static":
-            token_embeddings = self.token_embeddings_static(input_ids)
+            token_embeddings = self.word_embeddings_static(input_ids)
             token_type_embeddings = self.token_type_embeddings_static(token_type_ids)
         else:
-            static = self.token_embeddings_static(input_ids)
-            non_static = self.token_embeddings_non_static(input_ids)
+            static = self.word_embeddings_static(input_ids)
+            non_static = self.word_embeddings(input_ids)
             token_embeddings = torch.cat((static, non_static), dim=2)
             static = self.token_type_embeddings_static(token_type_ids)
-            non_static = self.token_type_embeddings_non_static(token_type_ids)
+            non_static = self.token_type_embeddings(token_type_ids)
             token_type_embeddings = torch.cat((static, non_static), dim=2)
         position_embeddings = self.position_embeddings(position_ids)
 
