@@ -401,6 +401,34 @@ class GPT2Processor(DataProcessor):
                 InputExample(guid=guid, text_a=text_a, text_b=None, label=0))
         return examples
 
+class SaraProcessor(DataProcessor):
+    """Processor for the Sara data set."""
+
+    def get_train_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
+
+    def get_dev_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
+
+    def get_labels(self):
+        """See base class."""
+        return [str(i) for i in range(57)]
+
+    def _create_examples(self, lines, set_type):
+        """Creates examples for the training and dev sets."""
+        examples = []
+        for (i, line) in enumerate(lines):
+            guid = "%s-%s" % (set_type, i)
+            text_a = line[1]
+            label = line[0]
+            examples.append(
+                InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
+        return examples
+
 def convert_examples_to_features(examples, label_list, max_seq_length,
                                  tokenizer, output_mode,
                                  cls_token_at_end=False,
@@ -571,6 +599,8 @@ def compute_metrics(task_name, preds, labels, additional_metrics=[]):
     assert len(preds) == len(labels)
     if task_name == "cola":
         results = {"mcc": matthews_corrcoef(labels, preds)}
+    elif task_name == "sara":
+        results = {"f1-macro": None, "f1-micro": None} # TO-DO: implement
     elif task_name == "sst-2":
         results = {"acc": simple_accuracy(preds, labels)}
     elif task_name == "mrpc":
@@ -604,6 +634,7 @@ processors = {
     "mnli": MnliProcessor,
     "mnli-mm": MnliMismatchedProcessor,
     "mrpc": MrpcProcessor,
+    "sara": SaraProcessor,
     "sst-2": Sst2Processor,
     "sts-b": StsbProcessor,
     "qqp": QqpProcessor,
@@ -618,6 +649,7 @@ output_modes = {
     "mnli": "classification",
     "mnli-mm": "classification",
     "mrpc": "classification",
+    "sara": "classification",
     "sst-2": "classification",
     "sts-b": "regression",
     "qqp": "classification",
@@ -630,6 +662,7 @@ GLUE_TASKS_NUM_LABELS = {
     "cola": 2,
     "mnli": 3,
     "mrpc": 2,
+    "sara": 57,
     "sst-2": 2,
     "sts-b": 1,
     "qqp": 2,

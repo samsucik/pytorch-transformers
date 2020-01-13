@@ -64,7 +64,7 @@ def main():
     parser.add_argument("--force", action='store_true',
                         help="Overwrite output_dir if it already exists.")
     parser.add_argument("--task_name", default=None, type=str, required=True,
-                        help="The name of the task to train selected in the list: " + ", ".join(processors.keys()))
+                        help="The name of the task to train selected in the list: [cola, sst-2, sara]")
     parser.add_argument("--do_lower_case", action='store_true',
                         help="Set this flag if you are using an uncased model.")
     parser.add_argument("--vocab_size", default=30522, type=int,
@@ -280,6 +280,10 @@ def main():
                 return False
             else:
                 return True
+        elif task_name == "sst-2":
+            return True
+        elif task_name == "sara":
+            return False
         else:
             raise ValueError("Unrecognised task name: {}".format(args.task_name))
 
@@ -299,6 +303,12 @@ def main():
         if args.task_name == "cola":
             # gj04    0   *   They drank the pub.
             return [("guid", None), ("label", label_field), ("acceptability", None), ("sentence", text_field)]
+        elif args.task_name == "sst-2":
+            # hide new secretions from the parental units     0
+            return [("sentence", text_field), ("label", None)]
+        elif args.task_name == "sara":
+            # 0 Yep that's fine
+            return [("label", None), ("sentence", text_field)]
         else:
             raise ValueError("Unrecognised task name: {}".format(args.task_name))
 
@@ -307,12 +317,22 @@ def main():
         if args.task_name == "cola":
             # gj04    0   *   They drank the pub.
             return [("guid", None), ("label", None), ("acceptability", None), ("sentence", text_field)]
+        elif args.task_name == "sst-2":
+            # hide new secretions from the parental units     0
+            return [("sentence", text_field), ("label", None)]
+        elif args.task_name == "sara":
+            # 0 Yep that's fine
+            return [("label", None), ("sentence", text_field)]
         else:
             raise ValueError("Unrecognised task name: {}".format(args.task_name))
 
     def get_n_classes(task_name):
         if task_name == "cola":
             n_classes = 2
+        elif task_name == "sst-2":
+            n_classes = 2
+        elif task_name == "sara":
+            n_classes = 57
         else:
             raise ValueError("Unrecognised task name: {}".format(task_name))
         return n_classes    
