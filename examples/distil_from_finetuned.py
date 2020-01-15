@@ -563,9 +563,9 @@ def main():
     transfer_dataset_numerical_file = os.path.join(args.data_dir, "train{}_{}_msl{}_{}.bin".format(
             "" if args.augmentation_type is None else ("_augmented-" + args.augmentation_type), 
             "word" if args.use_word_vectors else "wordpiece", str(args.max_seq_length), args.student_type))
-    # transfer_dataset_raw_file = os.path.join(args.data_dir, "cached_train_augmented-gpt-2_msl128_logits_bilstm-toy.csv")
-    transfer_dataset_raw_file = os.path.join(args.data_dir, "train{}_scored.tsv".format(
-            "" if args.augmentation_type is None else ("_augmented-" + args.augmentation_type)))
+    # transfer_dataset_raw_file = os.path.join(args.data_dir, "train{}_scored.tsv".format(
+    #         "" if args.augmentation_type is None else ("_augmented-" + args.augmentation_type)))
+    transfer_dataset_raw_file = os.path.join(args.data_dir, "cached_train_augmented-gpt-2_msl128_logits_bilstm.csv")
     # STAGE 1: create and store sentence and logits as TSV - model-agnostic raw transfer set.
     if not os.path.isfile(transfer_dataset_numerical_file):
         transfer_dataset_raw = create_raw_transfer_set(args, transfer_dataset_raw_file)
