@@ -343,8 +343,8 @@ def main():
         logit_fields = [("logit_{}".format(i), Field(sequential=False, use_vocab=False, batch_first=True, dtype=torch.float)) 
                         for i in range(n_classes)]
 
-        # return [("label", None), ("sentence", text_field)] + logit_fields
-        return [("sentence", text_field)] + logit_fields
+        return [("label", None), ("sentence", text_field)] + logit_fields
+        # return [("sentence", text_field)] + logit_fields
 
     def create_raw_transfer_set(args, cached_dataset_file):
         if not os.path.exists(cached_dataset_file):
