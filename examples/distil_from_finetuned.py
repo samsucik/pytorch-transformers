@@ -119,8 +119,10 @@ def main():
                         help="Gradient accumulation for larger training batches.")
     parser.add_argument("--max_steps", default=-1, type=int,
                         help="If > 0: set total number of training steps to perform. Override num_train_epochs.")
-    parser.add_argument("--warmup_prop", default=0.05, type=float,
-                        help="Linear warmup proportion.")
+    parser.add_argument("--warmup_epochs", default=0.05, type=float,
+                        help="Number of epochs for linear warmup.")
+    parser.add_argument("--lr_decay", type=parse_str2bool, default=False,
+                        help="Whether to linearly decay the learning rate down to 0 or not.")
     parser.add_argument("--weight_decay", default=0.0, type=float,
                         help="Weight decay if we apply some.")
     parser.add_argument("--learning_rate", default=5e-4, type=float,
