@@ -289,14 +289,14 @@ def main():
         else:
             raise ValueError("Unrecognised task name: {}".format(args.task_name))
 
-    def numericalise_sentence(args, sentence, tokenizer, cls_token="[CLS]", sep_token="[SEP]", pad_token_id=0):
+    def numericalise_sentence(args, sentence, tokenizer, cls_token="[CLS]", sep_token="[SEP]", pad_token_id=0, force_pad=0):
         tokens = tokenizer.tokenize(sentence)
         if args.max_seq_length > 0 and len(tokens) > args.max_seq_length - 2:
             tokens = tokens[:(args.max_seq_length - 2)]
         tokens = ([cls_token] if cls_token is not None else []) + tokens + ([sep_token] if cls_token is not None else [])
         token_ids = tokenizer.convert_tokens_to_ids(tokens)
-        if args.max_seq_length > 0:
-            token_ids += [pad_token_id] * (args.max_seq_length - len(token_ids))
+        if args.max_seq_length > 0 or force_pad > 0:
+            token_ids += [pad_token_id] * (max(args.max_seq_length, force_pad) - len(token_ids))
         return token_ids
 
     def get_original_dev_dataset_fields(args):
@@ -379,14 +379,12 @@ def main():
             for example in tqdm(combined_transfer_set.examples):
                 example_numericalised = numericalise_sentence(args, example.sentence, tokenizer_teacher, 
                                                               cls_token=cls_token, sep_token=sep_token, 
-                                                              pad_token_id=pad_token_id)
+                                                              pad_token_id=pad_token_id, force_pad=128)
                 mask = (np.array(example_numericalised) != pad_token_id).astype(int)
                 attention_masks.append(torch.LongTensor(mask))
                 numericalised_transfer_set.append(torch.LongTensor(example_numericalised))
             numericalised_transfer_set = torch.stack(numericalised_transfer_set)
             attention_masks = torch.stack(attention_masks)
-            print(numericalised_transfer_set)
-            print(pad_token_id)
             
             # add teacher logits
             teacher = BertForSequenceClassification.from_pretrained(args.teacher_name) # take outputs[1] for the logits
