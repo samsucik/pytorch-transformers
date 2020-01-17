@@ -222,7 +222,8 @@ class Distiller:
         """
         batch = tuple(t.to(self.params.device) for t in batch)
         if self.student_type == "BERT":
-            logits = self.student(input_ids=batch[0])[0]
+            # batch = [sentence, logits, sentence_length, attention_mask]
+            logits = self.student(input_ids=batch[0], attention_mask=batch[3])[0]
             n_sequences = batch[0].size(0)
         else:
             logits = self.student((batch[0], batch[2])) # batch[0] = sentence, batch[2] = sentence length
