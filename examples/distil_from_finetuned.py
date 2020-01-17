@@ -448,7 +448,7 @@ def main():
         if not args.max_seq_length > 0:
             lens = [len(sent) for sent in transfer_dataset_numerical["sentence"]]
             transfer_dataset_numerical["sentence_length"] = torch.LongTensor(lens)
-            pad_token_id = tokenizer.convert_tokens_to_ids([tokenizer.pad_token_id])[0]
+            pad_token_id = tokenizer.convert_tokens_to_ids([tokenizer.pad_token])[0]
             transfer_dataset_numerical = pad_sentences_to_longest(args, transfer_dataset_numerical, max(lens), pad_token_id)
         else:
             transfer_dataset_numerical["sentence_length"] = torch.LongTensor([0 for i in range(len(transfer_dataset_numerical["sentence"]))])
@@ -624,7 +624,7 @@ def main():
     for sample in transfer_dataset:
         sents = sample[0].cpu().numpy()
         for s in sents:
-            length = np.array(s == pad_token_id).astype(int).sum()
+            length = np.array(s != pad_token_id).astype(int).sum()
             max_len_found = max(max_len_found, length)
     logger.info("Longest transfer set example has length: {}".format(max_len_found))
 
