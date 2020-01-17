@@ -366,7 +366,7 @@ def main():
             combined_transfer_set.examples += augmentation_set.examples
 
             # TO-DO delete once everything works
-            combined_transfer_set.examples = combined_transfer_set.examples[:5]
+            # combined_transfer_set.examples = combined_transfer_set.examples[:5]
 
             # numericalise and pad the sentences
             tokenizer_teacher = BertTokenizer.from_pretrained(args.teacher_name, do_lower_case=args.do_lower_case)
@@ -482,15 +482,17 @@ def main():
             dev_dataset_raw = TabularDataset(dev_dataset_raw_file, format="tsv", fields=fields, skip_header=has_header(args.task_name))
             cls_token, sep_token, pad_token = tokenizer.cls_token, tokenizer.sep_token, tokenizer.pad_token
             pad_token_id = tokenizer.convert_tokens_to_ids([pad_token])[0]
-            dev_dataset_numerical = {"sentence": [], "label": [], "attention_mask": []}
+            dev_dataset_numerical = {"sentence": [], "label": []}
+            if args.student_type == "BERT": dev_dataset_numerical["attention_mask"] = []
             for example in tqdm(dev_dataset_raw.examples):
                 # here, the sentence is already tokenized into words, which is OK (when using wordpieces, not words)
                 # ONLY IF BertTokenizer has do_basic_tokenize set to True -- but that's the (sensible) default.
                 example_numericalised = numericalise_sentence(args, example.sentence, tokenizer, 
                                                               cls_token=cls_token, sep_token=sep_token, 
                                                               pad_token_id=pad_token_id)
-                mask = (np.array(example_numericalised) != pad_token_id).astype(int)
-                dev_dataset_numerical["attention_mask"].append(torch.LongTensor(mask))
+                if args.student_type == "BERT":
+                    mask = (np.array(example_numericalised) != pad_token_id).astype(int)
+                    dev_dataset_numerical["attention_mask"].append(torch.LongTensor(mask))
                 dev_dataset_numerical["sentence"].append(torch.LongTensor(example_numericalised))
                 dev_dataset_numerical["label"].append(torch.LongTensor([int(example.label)]))
             torch.save(dev_dataset_numerical, dev_dataset_numerical_file)
@@ -506,11 +508,15 @@ def main():
         else:
             dev_dataset_numerical["sentence_length"] = torch.LongTensor([0 for i in range(len(dev_dataset_numerical["sentence"]))])
             
-        dev_dataset_numerical["attention_mask"] = torch.stack(dev_dataset_numerical["attention_mask"])
+        if args.student_type == "BERT": dev_dataset_numerical["attention_mask"] = torch.stack(dev_dataset_numerical["attention_mask"])
         dev_dataset_numerical["sentence"] = torch.stack(dev_dataset_numerical["sentence"])
         dev_dataset_numerical["label"] = torch.stack(dev_dataset_numerical["label"])
-        dev_dataset = TensorDataset(dev_dataset_numerical["sentence"], dev_dataset_numerical["label"], 
-                                    dev_dataset_numerical["sentence_length"], dev_dataset_numerical["attention_mask"])
+        if args.student_type == "BERT":
+            dev_dataset = TensorDataset(dev_dataset_numerical["sentence"], dev_dataset_numerical["label"], 
+                                        dev_dataset_numerical["sentence_length"], dev_dataset_numerical["attention_mask"])
+        else:
+            dev_dataset = TensorDataset(dev_dataset_numerical["sentence"], dev_dataset_numerical["label"], 
+                                        dev_dataset_numerical["sentence_length"])
         dev_dataset_sampler = SequentialSampler(dev_dataset)
         dev_dataset = DataLoader(dev_dataset, sampler=dev_dataset_sampler, batch_size=args.per_gpu_eval_batch_size)
         
@@ -523,14 +529,15 @@ def main():
         # - task_name
         # - device
         # - student type
-        # dev dataset contains: [sentence, label, sentence_length, attention_mask]
         params.model.eval()
         preds, targets = None, None
         for batch in params.dataset:
             batch = tuple(t.to(params.device) for t in batch)
             with torch.no_grad():
+                # dev dataset contains: [sentence, label, sentence_length, attention_mask]
                 if params.student_type == "BERT":
                     logits = params.model(batch[0], attention_mask=batch[3])[0]
+                # dev dataset contains: [sentence, label, sentence_length]
                 else: # feed LSTM also with sentence lengths
                     logits = params.model((batch[0], batch[2]))
             labels_pred = logits.max(1)[1]
@@ -615,7 +622,7 @@ def main():
     pad_token_id = tokenizer.convert_tokens_to_ids([tokenizer.pad_token])[0]
     max_len_found = 0
     for sample in transfer_dataset:
-        sents = sample[0].numpy()
+        sents = sample[0].cpu().numpy()
         for s in sents:
             length = np.array(s == pad_token_id).astype(int).sum()
             max_len_found = max(max_len_found, length)
@@ -623,8 +630,8 @@ def main():
 
     ## DEV SET
     if args.evaluate_during_training:
-        dev_dataset_numerical_file = os.path.join(args.data_dir, "dev_{}_msl{}.bin".format(
-            "word" if args.use_word_vectors else "wordpiece", str(args.max_seq_length)))
+        dev_dataset_numerical_file = os.path.join(args.data_dir, "dev_{}_msl{}_{}.bin".format(
+            "word" if args.use_word_vectors else "wordpiece", str(args.max_seq_length), args.student_type))
         dev_dataset = create_numerical_dev_set(args, dev_dataset_numerical_file, tokenizer)
         evaluate_fn = evaluate_model
     else:
