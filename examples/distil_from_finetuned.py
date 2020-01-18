@@ -20,6 +20,7 @@ import argparse
 import pickle
 import json
 import shutil
+import glob
 from tqdm import tqdm
 from types import SimpleNamespace
 import numpy as np
@@ -40,7 +41,6 @@ from distillation.tokenization_word import WordTokenizer
 from distillation.bi_rnn import BiRNNModel
 
 from utils_glue import processors, compute_metrics
-
 
 def main():
     parser = argparse.ArgumentParser(description="Training")
@@ -173,6 +173,14 @@ def main():
                         help="LSTM layer size.")
     parser.add_argument("--mode", default="multichannel", type=str,
                         help="Embedding mode. One of [rand, static, non-static, multichannel].")
+
+    # Arguments for scoring sentences (for gathering mistakes)
+    parser.add_argument("--score_with_teacher", type=parse_str2bool, default=False,
+                        help="Instead of distillation, just score sentences with teacher model.")
+    parser.add_argument("--score_with_student", type=parse_str2bool, default=False,
+                        help="Instead of distillation, just score sentences with student model.")
+    parser.add_argument("--trained_model_dir", default=None, type=str,
+                        help="Directory containing the trained model to use for scoring sentences.")
 
     args = parser.parse_args()
    
@@ -582,16 +590,31 @@ def main():
         args.special_tok_ids = special_tok_ids
         return tokenizer
 
+    def softmax(x):
+        return np.exp(np.array(x))/sum(np.exp(np.array(x)))
+
+    if args.score_with_student or args.score_with_teacher:
+        assert os.path.isdir(args.trained_model_dir)
+        args_saved = torch.load(os.path.join(args.trained_model_dir, "training_args.bin"))
+        args.max_seq_length = args_saved.max_seq_length
+        for k in ["task_name", "student_type", "score_with_student", "score_with_teacher", "trained_model_dir", 
+                  "data_dir", "word_vectors_dir", "word_vectors_file", "seed", "n_gpu", "no_cuda", "augmentation_type",
+                  "device", "max_seq_length", "output_dir"]:
+            args_saved.__dict__[k] = args.__dict__[k]
+        args = args_saved
+
     ## TRANSFER SET
     transfer_dataset_numerical_file = os.path.join(args.data_dir, "train{}_{}_msl{}_{}.bin".format(
             "" if args.augmentation_type is None else ("_augmented-" + args.augmentation_type), 
             "word" if args.use_word_vectors else "wordpiece", str(args.max_seq_length), args.student_type))
     transfer_dataset_raw_file = os.path.join(args.data_dir, "train{}_scored.tsv".format(
             "" if args.augmentation_type is None else ("_augmented-" + args.augmentation_type)))
-    # transfer_dataset_raw_file = os.path.join(args.data_dir, "cached_train_augmented-gpt-2_msl128_logits_bilstm-toy.csv")
     # STAGE 1: create and store sentence and logits as TSV - model-agnostic raw transfer set.
-    if not os.path.isfile(transfer_dataset_numerical_file):
-        transfer_dataset_raw = create_raw_transfer_set(args, transfer_dataset_raw_file)
+    if not (args.score_with_teacher or args.score_with_student):
+        if not os.path.isfile(transfer_dataset_numerical_file):
+            transfer_dataset_raw = create_raw_transfer_set(args, transfer_dataset_raw_file)
+        else:
+            transfer_dataset_raw = None
     else:
         transfer_dataset_raw = None
 
@@ -616,20 +639,20 @@ def main():
         args.special_tok_ids = special_tok_ids
 
     # STAGE 2: create and store numericalised transfer set (input ids, logits) as binary - model-specific transfer set.
-    transfer_dataset = create_numerical_transfer_set(args, transfer_dataset_numerical_file, tokenizer, transfer_dataset_raw)
-
-    # find maximum sequence length present in transfer set
-    pad_token_id = tokenizer.convert_tokens_to_ids([tokenizer.pad_token])[0]
-    max_len_found = 0
-    for sample in transfer_dataset:
-        sents = sample[0].cpu().numpy()
-        for s in sents:
-            length = np.array(s != pad_token_id).astype(int).sum()
-            max_len_found = max(max_len_found, length)
-    logger.info("Longest transfer set example has length: {}".format(max_len_found))
+    if not (args.score_with_student or args.score_with_teacher):
+        transfer_dataset = create_numerical_transfer_set(args, transfer_dataset_numerical_file, tokenizer, transfer_dataset_raw)
+        # find maximum sequence length present in transfer set
+        pad_token_id = tokenizer.convert_tokens_to_ids([tokenizer.pad_token])[0]
+        max_len_found = 0
+        for sample in transfer_dataset:
+            sents = sample[0].cpu().numpy()
+            for s in sents:
+                length = np.array(s != pad_token_id).astype(int).sum()
+                max_len_found = max(max_len_found, length)
+        logger.info("Longest transfer set example has length: {}".format(max_len_found))
 
     ## DEV SET
-    if args.evaluate_during_training:
+    if args.evaluate_during_training or args.score_with_student or args.score_with_teacher:
         dev_dataset_numerical_file = os.path.join(args.data_dir, "dev_{}_msl{}_{}.bin".format(
             "word" if args.use_word_vectors else "wordpiece", str(args.max_seq_length), args.student_type))
         dev_dataset = create_numerical_dev_set(args, dev_dataset_numerical_file, tokenizer)
@@ -637,6 +660,47 @@ def main():
     else:
         dev_dataset = None
         evaluate_fn = None
+
+    ## Scoring sentences instead of distillation
+    if args.score_with_teacher or args.score_with_student:        
+        if args.score_with_student and args.student_type == "LSTM":
+            torch.cuda.deterministic = True
+            model = BiRNNModel(args)
+            file =  glob.glob(os.path.join(args.trained_model_dir, "pytorch_model*"))
+            state_dict = torch.load(file[0], map_location=args.device)
+            model.load_state_dict(state_dict, strict=False)
+        else:
+            model = BertForSequenceClassification.from_pretrained(args.trained_model_dir)
+        logger.info("Scoring the evaluation sentences...")
+        model.eval()
+        logits_all, preds, targets = [], [], []
+        for batch in dev_dataset:
+            with torch.no_grad():
+                if args.student_type == "BERT" or args.score_with_teacher:
+                    logits = model(batch[0].to(args.device), attention_mask=batch[3].to(args.device))[0]
+                else:
+                    logits = model((batch[0].to(args.device), batch[2].to(args.device)))
+            labels_pred = logits.max(1)[1]
+            logits_all.append(logits.detach().cpu().numpy())
+            preds.append(labels_pred.detach().cpu().numpy())
+            targets.append(batch[1].detach().cpu().numpy())
+        logits_all = np.concatenate(logits_all, axis=0)
+        preds = np.concatenate(preds, axis=0)
+        targets = np.concatenate(targets, axis=0)
+        result = compute_metrics(args.task_name, preds, targets)
+        print(result)
+        dev_dataset_raw = TabularDataset(os.path.join(args.data_dir, "dev.tsv"), format="tsv", 
+            fields=get_original_dev_dataset_fields(args), skip_header=has_header(args.task_name))
+        # sentence    label    pred    certainty_of_pred    certainty_of_label    logits
+        out_file = "dev_scored_{}.tsv".format("teacher" if args.score_with_teacher else args.student_type)
+        with open(os.path.join(args.output_dir, out_file), "w") as f:
+            f.write("sentence\tlabel\tpred\tcertainty_of_pred\tcertainty_of_label\tlogits\n")
+            for (ex, pred, logits) in list(zip(dev_dataset_raw.examples, preds, logits_all)):
+                label, pred = int(ex.label), int(pred)
+                scores = softmax(logits)
+                logits_str = ",".join([str(l) for l in logits])
+                f.write("{}\t{}\t{}\t{:.3f}\t{:.3f}\t{}\n".format(ex.sentence, label, pred, scores[pred], scores[label], logits_str))
+        exit(0)
 
     ## STUDENT
     args.use_learned_embeddings = args.token_embeddings_from_teacher or args.use_word_vectors
