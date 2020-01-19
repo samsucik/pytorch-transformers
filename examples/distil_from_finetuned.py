@@ -669,7 +669,7 @@ def main():
         if args.score_with_student and args.student_type == "LSTM":
             torch.cuda.deterministic = True
             file =  glob.glob(os.path.join(args.trained_model_dir, "pytorch_model_best*.pt"))
-            model = torch.load(file)
+            model = torch.load(file[0])
             """
             model = BiRNNModel(args)
             state_dict = torch.load(file[0], map_location=args.device)
