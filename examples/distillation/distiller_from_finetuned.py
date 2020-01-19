@@ -37,6 +37,8 @@ from pytorch_transformers import WarmupLinearSchedule, WarmupConstantSchedule
 from examples.distillation.utils import logger
 from examples.run_glue import set_seed, evaluate
 
+from examples.distillation.bi_rnn import BiRNNModel
+
 def human_format(num):
     # from https://stackoverflow.com/questions/579310/formatting-long-numbers-as-strings-in-python
     magnitude = 0
@@ -325,6 +327,12 @@ class Distiller:
             logger.info("Deleting previous best checkpoint(s): {}".format(previous_bests))
             for f in previous_bests: os.remove(os.path.join(self.output_dir, f))
 
+            print("Scoring AGAIN")
+            eval_params = SimpleNamespace(dataset=self.dataset_eval, model=self.student, student_type=self.student_type, \
+                                                  task_name=self.params.task_name, device=self.params.device)
+            results = self.evaluate_fn(eval_params)
+            print(checkpoint_name, results)
+
         if checkpoint_name is not None:
             checkpoint_name = "pytorch_model_" + checkpoint_name + ".bin"
 
@@ -333,6 +341,36 @@ class Distiller:
             if self.student_type == "BERT": mdl_to_save.config.save_pretrained(self.output_dir)
             state_dict = mdl_to_save.state_dict()
             torch.save(state_dict, os.path.join(self.output_dir, checkpoint_name))
+
+            if kind == "best":
+                print("RELOADING...")
+                state_dict = torch.load(os.path.join(self.output_dir, checkpoint_name), map_location=self.params.device)
+                if hasattr(self.student, 'module'):
+                    print("Student has MODULE")
+                # model.load_state_dict(state_dict, strict=False)
+                param_keys = self.student.load_state_dict(state_dict, strict=False)
+                loaded_params = [p for p in self.student.state_dict() if p not in param_keys[0]]
+                num_loaded_params = sum([self.student.state_dict()[p].numel() for p in loaded_params])
+                num_all_params = sum([p.numel() for n, p in self.student.state_dict().items()])
+                print("Loaded {} parameters (out of total {}) into: {}".format(num_loaded_params, num_all_params, loaded_params))
+                print("Scoring YET AGAIN!!!")
+                eval_params = SimpleNamespace(dataset=self.dataset_eval, model=self.student, student_type=self.student_type, \
+                                                      task_name=self.params.task_name, device=self.params.device)
+                results = self.evaluate_fn(eval_params)
+                self.student.train()
+                print(checkpoint_name, results)
+                print("Scoring YET AGAIN, THIS TIME WITH STUDENT BUILT FROM SCRATCH!!!")
+                student = BiRNNModel(self.params).to(self.params.device)
+                param_keys = student.load_state_dict(state_dict, strict=False)
+                loaded_params = [p for p in student.state_dict() if p not in param_keys[0]]
+                num_loaded_params = sum([student.state_dict()[p].numel() for p in loaded_params])
+                num_all_params = sum([p.numel() for n, p in student.state_dict().items()])
+                print("Loaded {} parameters (out of total {}) into: {}".format(num_loaded_params, num_all_params, loaded_params))
+                # print("Scoring YET AGAIN!!!")
+                eval_params = SimpleNamespace(dataset=self.dataset_eval, model=student, student_type=self.student_type, \
+                                                      task_name=self.params.task_name, device=self.params.device)
+                results = self.evaluate_fn(eval_params)
+                print(checkpoint_name, results)
         else:
             if self.student_type == "BERT":
                 mdl_to_save.save_pretrained(self.output_dir)
