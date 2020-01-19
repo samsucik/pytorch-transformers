@@ -668,14 +668,17 @@ def main():
         # print("N_CLASSES", args.n_classes)     
         if args.score_with_student and args.student_type == "LSTM":
             torch.cuda.deterministic = True
+            file =  glob.glob(os.path.join(args.trained_model_dir, "pytorch_model_best*.pt"))
+            model = torch.load(file)
+            """
             model = BiRNNModel(args)
-            file =  glob.glob(os.path.join(args.trained_model_dir, "pytorch_model_best*"))
             state_dict = torch.load(file[0], map_location=args.device)
             param_keys = model.load_state_dict(state_dict, strict=True)
             loaded_params = [p for p in model.state_dict() if p not in param_keys[0]]
             num_loaded_params = sum([model.state_dict()[p].numel() for p in loaded_params])
             num_all_params = sum([p.numel() for n, p in model.state_dict().items()])
             logger.info("Loaded {} parameters (out of total {}) into: {}".format(num_loaded_params, num_all_params, loaded_params))
+            """
         else:
             model = BertForSequenceClassification.from_pretrained(args.trained_model_dir)
         logger.info("Scoring the evaluation sentences...")
