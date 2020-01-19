@@ -720,7 +720,7 @@ def main():
                 line = "{}\t{}\t{}\t{:.3f}\t{:.3f}\t{}\n".format(ex.sentence, label, pred, scores[pred], scores[label], logits_str)
                 f.write(line)
         exit(0)
-    args.max_steps = 75
+    # args.max_steps = 75
 
     ## STUDENT
     args.use_learned_embeddings = args.token_embeddings_from_teacher or args.use_word_vectors
