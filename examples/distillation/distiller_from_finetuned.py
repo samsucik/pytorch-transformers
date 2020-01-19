@@ -215,6 +215,7 @@ class Distiller:
             logger.info("--- Ending epoch {}/{}".format(self.epoch, self.n_epochs-1))
             self.end_epoch()
 
+        """
         logger.info("FINAL SCORING OF PREV BEST CKPT")
         args = self.params
         torch.cuda.deterministic = True
@@ -242,7 +243,8 @@ class Distiller:
         targets = np.concatenate(targets, axis=0).reshape((-1, ))
         result = compute_metrics(args.task_name, preds, targets)
         logger.info("Result of prev best ({}): {}".format(self.prev_best_ckpt, result))
-
+        """
+        
         logger.info("Save very last checkpoint as `pytorch_model.bin`.")
         self.save_checkpoint()
         self.tensorboard.close()
@@ -353,6 +355,7 @@ class Distiller:
 
         # delete all previous best checkpoints
         if kind == "best":
+            """
             if self.prev_best_ckpt is not None:
                 args = self.params
                 torch.cuda.deterministic = True
@@ -397,18 +400,20 @@ class Distiller:
                 targets = np.concatenate(targets, axis=0).reshape((-1, ))
                 result = compute_metrics(args.task_name, preds, targets)
                 logger.info("SCORING USING PREVIOUS BEST MODEL (saved as model) ({}): {}".format(self.prev_best_ckpt[-20:], result))
-
+            """
+            
             checkpoint_name = ("best_" + checkpoint_name) if checkpoint_name is not None else "best"
             previous_bests = [f for f in os.listdir(self.output_dir) if re.match(r'.*best.*\.bin', f)]
             logger.info("Deleting previous best checkpoint(s): {}".format(previous_bests))
             for f in previous_bests: os.remove(os.path.join(self.output_dir, f))
-
+            
+            """
             logger.info("Scoring AGAIN (BEFORE SAVING THIS BEST CKPT)")
             eval_params = SimpleNamespace(dataset=self.dataset_eval, model=self.student, student_type=self.student_type, \
                                                   task_name=self.params.task_name, device=self.params.device)
             results = self.evaluate_fn(eval_params)
             logger.info("{}: {}".format(checkpoint_name, results))
-
+            """
         if checkpoint_name is not None:
             checkpoint_name = "pytorch_model_" + checkpoint_name + ".bin"
 
@@ -416,13 +421,14 @@ class Distiller:
         if checkpoint_name is not None:
             if self.student_type == "BERT": mdl_to_save.config.save_pretrained(self.output_dir)
             state_dict = mdl_to_save.state_dict()
-            sd1 = {n: p.detach().clone().cpu() for n, p in state_dict.items()}
-            torch.save(sd1, os.path.join(self.output_dir, checkpoint_name))
+            torch.save(state_dict, os.path.join(self.output_dir, checkpoint_name))
             torch.save(self.student, os.path.join(self.output_dir, checkpoint_name+".pt"))
+            
+            """
+            sd1 = {n: p.detach().clone().cpu() for n, p in state_dict.items()}
             self.prev_best_ckpt = os.path.join(self.output_dir, checkpoint_name)
             self.prev_best_dict = sd1
-
-            # """
+            
             if kind == "best":
                 logger.info("RELOADING...")
                 student = BiRNNModel(self.params).to(self.params.device)
@@ -436,7 +442,7 @@ class Distiller:
                                                       task_name=self.params.task_name, device=self.params.device)
                 results = self.evaluate_fn(eval_params)
                 logger.info("CURRENT BEST (FRESHLY SAVED) {}: {}".format(checkpoint_name, results))
-            # """
+            """
         else:
             if self.student_type == "BERT":
                 mdl_to_save.save_pretrained(self.output_dir)

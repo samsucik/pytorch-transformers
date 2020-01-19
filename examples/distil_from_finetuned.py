@@ -666,8 +666,8 @@ def main():
     ## Scoring sentences instead of distillation
     if args.score_with_teacher or args.score_with_student:
         # print("N_CLASSES", args.n_classes)     
-        if args.score_with_student and args.student_type == "LSTM":
-            torch.cuda.deterministic = True
+        if args.score_with_student: # and args.student_type == "LSTM":
+            # torch.cuda.deterministic = True
             file =  glob.glob(os.path.join(args.trained_model_dir, "pytorch_model_best*.pt"))
             model = torch.load(file[0])
             """
@@ -720,7 +720,7 @@ def main():
                 line = "{}\t{}\t{}\t{:.3f}\t{:.3f}\t{}\n".format(ex.sentence, label, pred, scores[pred], scores[label], logits_str)
                 f.write(line)
         exit(0)
-    args.max_steps = 45
+    args.max_steps = 75
 
     ## STUDENT
     args.use_learned_embeddings = args.token_embeddings_from_teacher or args.use_word_vectors
@@ -851,8 +851,8 @@ def main():
     distiller.train()
     logger.info("Let's go get some drinks.")
 
+    """
     logger.info("FINAL SCORING OF PREV BEST CKPT AFTER GETTING BACK FROM THE PUB")
-    # args = distiller.params
     torch.cuda.deterministic = True
     model = BiRNNModel(args)
     sdict = torch.load(distiller.prev_best_ckpt, map_location=args.device)
@@ -878,6 +878,7 @@ def main():
     targets = np.concatenate(targets, axis=0).reshape((-1, ))
     result = compute_metrics(args.task_name, preds, targets)
     logger.info("Result of prev best ({}): {}".format(distiller.prev_best_ckpt, result))
+    """
 
 if __name__ == "__main__":
     main()
