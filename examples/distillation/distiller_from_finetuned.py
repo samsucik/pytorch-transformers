@@ -418,7 +418,7 @@ class Distiller:
             state_dict = mdl_to_save.state_dict()
             sd1 = {n: p.detach().clone().cpu() for n, p in state_dict.items()}
             torch.save(sd1, os.path.join(self.output_dir, checkpoint_name))
-            torch.save(model, os.path.join(self.output_dir, checkpoint_name+".pt")
+            torch.save(model, os.path.join(self.output_dir, checkpoint_name+".pt"))
             self.prev_best_ckpt = os.path.join(self.output_dir, checkpoint_name)
             self.prev_best_dict = sd1
 
