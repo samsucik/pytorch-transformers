@@ -358,7 +358,7 @@ class Distiller:
                                                       task_name=self.params.task_name, device=self.params.device)
                 results = self.evaluate_fn(eval_params)
                 self.student.train()
-                logger.info(checkpoint_name, results)
+                logger.info("{}: {}".format(checkpoint_name, results))
                 logger.info("Scoring YET AGAIN, THIS TIME WITH STUDENT BUILT FROM SCRATCH!!!")
                 student = BiRNNModel(self.params).to(self.params.device)
                 param_keys = student.load_state_dict(state_dict, strict=False)
@@ -370,7 +370,7 @@ class Distiller:
                 eval_params = SimpleNamespace(dataset=self.dataset_eval, model=student, student_type=self.student_type, \
                                                       task_name=self.params.task_name, device=self.params.device)
                 results = self.evaluate_fn(eval_params)
-                logger.info(checkpoint_name, results)
+                logger.info("{}: {}".format(checkpoint_name, results))
         else:
             if self.student_type == "BERT":
                 mdl_to_save.save_pretrained(self.output_dir)
