@@ -343,34 +343,34 @@ class Distiller:
             torch.save(state_dict, os.path.join(self.output_dir, checkpoint_name))
 
             if kind == "best":
-                print("RELOADING...")
+                logger.info("RELOADING...")
                 state_dict = torch.load(os.path.join(self.output_dir, checkpoint_name), map_location=self.params.device)
                 if hasattr(self.student, 'module'):
-                    print("Student has MODULE")
+                    logger.info("Student has MODULE")
                 # model.load_state_dict(state_dict, strict=False)
                 param_keys = self.student.load_state_dict(state_dict, strict=False)
                 loaded_params = [p for p in self.student.state_dict() if p not in param_keys[0]]
                 num_loaded_params = sum([self.student.state_dict()[p].numel() for p in loaded_params])
                 num_all_params = sum([p.numel() for n, p in self.student.state_dict().items()])
-                print("Loaded {} parameters (out of total {}) into: {}".format(num_loaded_params, num_all_params, loaded_params))
-                print("Scoring YET AGAIN!!!")
+                logger.info("Loaded {} parameters (out of total {}) into: {}".format(num_loaded_params, num_all_params, loaded_params))
+                logger.info("Scoring YET AGAIN!!!")
                 eval_params = SimpleNamespace(dataset=self.dataset_eval, model=self.student, student_type=self.student_type, \
                                                       task_name=self.params.task_name, device=self.params.device)
                 results = self.evaluate_fn(eval_params)
                 self.student.train()
-                print(checkpoint_name, results)
-                print("Scoring YET AGAIN, THIS TIME WITH STUDENT BUILT FROM SCRATCH!!!")
+                logger.info(checkpoint_name, results)
+                logger.info("Scoring YET AGAIN, THIS TIME WITH STUDENT BUILT FROM SCRATCH!!!")
                 student = BiRNNModel(self.params).to(self.params.device)
                 param_keys = student.load_state_dict(state_dict, strict=False)
                 loaded_params = [p for p in student.state_dict() if p not in param_keys[0]]
                 num_loaded_params = sum([student.state_dict()[p].numel() for p in loaded_params])
                 num_all_params = sum([p.numel() for n, p in student.state_dict().items()])
-                print("Loaded {} parameters (out of total {}) into: {}".format(num_loaded_params, num_all_params, loaded_params))
+                logger.info("Loaded {} parameters (out of total {}) into: {}".format(num_loaded_params, num_all_params, loaded_params))
                 # print("Scoring YET AGAIN!!!")
                 eval_params = SimpleNamespace(dataset=self.dataset_eval, model=student, student_type=self.student_type, \
                                                       task_name=self.params.task_name, device=self.params.device)
                 results = self.evaluate_fn(eval_params)
-                print(checkpoint_name, results)
+                logger.info(checkpoint_name, results)
         else:
             if self.student_type == "BERT":
                 mdl_to_save.save_pretrained(self.output_dir)
