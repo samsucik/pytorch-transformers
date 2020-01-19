@@ -380,6 +380,23 @@ class Distiller:
                 targets = np.concatenate(targets, axis=0).reshape((-1, ))
                 result = compute_metrics(args.task_name, preds, targets)
                 logger.info("SCORING USING PREVIOUS BEST MODEL ({}): {}".format(self.prev_best_ckpt[-20:], result))
+                model = torch.load(self.prev_best_ckpt+".pt")
+                model.to(args.device)
+                torch.cuda.empty_cache()
+                model.eval()
+                logits_all, preds, targets = [], [], []
+                for batch in self.dataset_eval:
+                    with torch.no_grad():
+                        logits = model((batch[0].to(args.device), batch[2].to(args.device)))
+                    labels_pred = logits.max(1)[1]
+                    logits_all.append(logits.detach().cpu().numpy())
+                    preds.append(labels_pred.detach().cpu().numpy())
+                    targets.append(batch[1].detach().cpu().numpy())
+                logits_all = np.concatenate(logits_all, axis=0)
+                preds = np.concatenate(preds, axis=0)
+                targets = np.concatenate(targets, axis=0).reshape((-1, ))
+                result = compute_metrics(args.task_name, preds, targets)
+                logger.info("SCORING USING PREVIOUS BEST MODEL (saved as model) ({}): {}".format(self.prev_best_ckpt[-20:], result))
 
             checkpoint_name = ("best_" + checkpoint_name) if checkpoint_name is not None else "best"
             previous_bests = [f for f in os.listdir(self.output_dir) if re.match(r'.*best.*\.bin', f)]
@@ -401,6 +418,7 @@ class Distiller:
             state_dict = mdl_to_save.state_dict()
             sd1 = {n: p.detach().clone().cpu() for n, p in state_dict.items()}
             torch.save(sd1, os.path.join(self.output_dir, checkpoint_name))
+            torch.save(model, os.path.join(self.output_dir, checkpoint_name+".pt")
             self.prev_best_ckpt = os.path.join(self.output_dir, checkpoint_name)
             self.prev_best_dict = sd1
 
