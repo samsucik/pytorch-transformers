@@ -596,7 +596,10 @@ def main():
     if args.score_with_student or args.score_with_teacher:
         assert os.path.isdir(args.trained_model_dir)
         args_saved = torch.load(os.path.join(args.trained_model_dir, "training_args.bin"))
-        args.max_seq_length = args_saved.max_seq_length
+        # args.max_seq_length = args_saved.max_seq_length
+        for k, v in args.__dict__.items():
+            if k not in args_saved.__dict__: print("MISSING", k, v)
+            elif v != args_saved.__dict__[k]: print("DIFFERENT", k, v, args_saved.__dict__[k])
         for k in ["task_name", "student_type", "score_with_student", "score_with_teacher", "trained_model_dir", 
                   "data_dir", "word_vectors_dir", "word_vectors_file", "seed", "n_gpu", "no_cuda", "augmentation_type",
                   "device", "max_seq_length", "output_dir"]:
@@ -672,6 +675,8 @@ def main():
         else:
             model = BertForSequenceClassification.from_pretrained(args.trained_model_dir)
         logger.info("Scoring the evaluation sentences...")
+        print(args.device)
+        model.to(args.device)
         model.eval()
         logits_all, preds, targets = [], [], []
         for batch in dev_dataset:
