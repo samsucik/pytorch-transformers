@@ -386,11 +386,11 @@ class Distiller:
             logger.info("Deleting previous best checkpoint(s): {}".format(previous_bests))
             for f in previous_bests: os.remove(os.path.join(self.output_dir, f))
 
-            # logger.info("Scoring AGAIN")
-            # eval_params = SimpleNamespace(dataset=self.dataset_eval, model=self.student, student_type=self.student_type, \
-            #                                       task_name=self.params.task_name, device=self.params.device)
-            # results = self.evaluate_fn(eval_params)
-            # logger.info("{}: {}".format(checkpoint_name, results))
+            logger.info("Scoring AGAIN (BEFORE SAVING THIS BEST CKPT)")
+            eval_params = SimpleNamespace(dataset=self.dataset_eval, model=self.student, student_type=self.student_type, \
+                                                  task_name=self.params.task_name, device=self.params.device)
+            results = self.evaluate_fn(eval_params)
+            logger.info("{}: {}".format(checkpoint_name, results))
 
         if checkpoint_name is not None:
             checkpoint_name = "pytorch_model_" + checkpoint_name + ".bin"
@@ -404,7 +404,7 @@ class Distiller:
             self.prev_best_ckpt = os.path.join(self.output_dir, checkpoint_name)
             self.prev_best_dict = sd1
 
-            """
+            # """
             if kind == "best":
                 logger.info("RELOADING...")
                 student = BiRNNModel(self.params).to(self.params.device)
@@ -417,8 +417,8 @@ class Distiller:
                 eval_params = SimpleNamespace(dataset=self.dataset_eval, model=student, student_type=self.student_type, \
                                                       task_name=self.params.task_name, device=self.params.device)
                 results = self.evaluate_fn(eval_params)
-                logger.info("CURRENT BEST {}: {}".format(checkpoint_name, results))
-            """
+                logger.info("CURRENT BEST (FRESHLY SAVED) {}: {}".format(checkpoint_name, results))
+            # """
         else:
             if self.student_type == "BERT":
                 mdl_to_save.save_pretrained(self.output_dir)
