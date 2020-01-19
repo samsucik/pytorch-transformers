@@ -59,7 +59,7 @@ class Distiller:
         student_type="BERT" # one of BERT, LSTM
     ):
         self.prev_best_ckpt = None
-
+        self.prev_best_dict = None
         logger.info('Initializing Distiller')
         assert student_type in ["BERT", "LSTM"]
         self.student_type = student_type
@@ -220,11 +220,14 @@ class Distiller:
         torch.cuda.deterministic = True
         model = BiRNNModel(args)
         sdict = torch.load(self.prev_best_ckpt, map_location=args.device)
+        for k, v in sdict.items():
+            logger.info("{}: {}".format(k, torch.equal(v, self.prev_best_dict[k])))
         param_keys = model.load_state_dict(sdict, strict=True)
         loaded_params = [p for p in model.state_dict() if p not in param_keys[0]]
         num_loaded_params = sum([model.state_dict()[p].numel() for p in loaded_params])
         num_all_params = sum([p.numel() for n, p in model.state_dict().items()])
         model.to(args.device)
+        torch.cuda.empty_cache()
         model.eval()
         logits_all, preds, targets = [], [], []
         for batch in self.dataset_eval:
@@ -355,11 +358,14 @@ class Distiller:
                 torch.cuda.deterministic = True
                 model = BiRNNModel(args)
                 sdict = torch.load(self.prev_best_ckpt, map_location=args.device)
+                for k, v in sdict.items():
+                    logger.info("{}: {}".format(k, torch.equal(v, self.prev_best_dict[k])))
                 param_keys = model.load_state_dict(sdict, strict=True)
                 loaded_params = [p for p in model.state_dict() if p not in param_keys[0]]
                 num_loaded_params = sum([model.state_dict()[p].numel() for p in loaded_params])
                 num_all_params = sum([p.numel() for n, p in model.state_dict().items()])
                 model.to(args.device)
+                torch.cuda.empty_cache()
                 model.eval()
                 logits_all, preds, targets = [], [], []
                 for batch in self.dataset_eval:
@@ -393,9 +399,10 @@ class Distiller:
         if checkpoint_name is not None:
             if self.student_type == "BERT": mdl_to_save.config.save_pretrained(self.output_dir)
             state_dict = mdl_to_save.state_dict()
-            sd1 = {n: p.clone().detach() for n, p in state_dict.items()}
+            sd1 = {n: p.detach().clone().cpu() for n, p in state_dict.items()}
             torch.save(sd1, os.path.join(self.output_dir, checkpoint_name))
             self.prev_best_ckpt = os.path.join(self.output_dir, checkpoint_name)
+            self.prev_best_dict = sd1
 
             """
             if kind == "best":

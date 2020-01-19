@@ -853,11 +853,14 @@ def main():
     torch.cuda.deterministic = True
     model = BiRNNModel(args)
     sdict = torch.load(distiller.prev_best_ckpt, map_location=args.device)
+    for k, v in sdict.items():
+        logger.info("{}: {}".format(k, torch.equal(v, distiller.prev_best_dict[k])))
     param_keys = model.load_state_dict(sdict, strict=True)
     loaded_params = [p for p in model.state_dict() if p not in param_keys[0]]
     num_loaded_params = sum([model.state_dict()[p].numel() for p in loaded_params])
     num_all_params = sum([p.numel() for n, p in model.state_dict().items()])
     model.to(args.device)
+    torch.cuda.empty_cache()
     model.eval()
     logits_all, preds, targets = [], [], []
     for batch in distiller.dataset_eval:
