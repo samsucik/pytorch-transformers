@@ -666,7 +666,7 @@ def main():
         if args.score_with_student and args.student_type == "LSTM":
             torch.cuda.deterministic = True
             model = BiRNNModel(args)
-            file =  glob.glob(os.path.join(args.trained_model_dir, "pytorch_model*"))
+            file =  glob.glob(os.path.join(args.trained_model_dir, "pytorch_model_best*"))
             state_dict = torch.load(file[0], map_location=args.device)
             model.load_state_dict(state_dict, strict=False)
         else:
@@ -699,7 +699,8 @@ def main():
                 label, pred = int(ex.label), int(pred)
                 scores = softmax(logits)
                 logits_str = ",".join([str(l) for l in logits])
-                f.write("{}\t{}\t{}\t{:.3f}\t{:.3f}\t{}\n".format(ex.sentence, label, pred, scores[pred], scores[label], logits_str))
+                line = "{}\t{}\t{}\t{:.3f}\t{:.3f}\t{}\n".format(ex.sentence, label, pred, scores[pred], scores[label], logits_str)
+                f.write(line)
         exit(0)
 
     ## STUDENT
