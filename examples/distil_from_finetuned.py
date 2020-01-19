@@ -665,7 +665,7 @@ def main():
 
     ## Scoring sentences instead of distillation
     if args.score_with_teacher or args.score_with_student:
-        print("N_CLASSES", args.n_classes)     
+        # print("N_CLASSES", args.n_classes)     
         if args.score_with_student and args.student_type == "LSTM":
             torch.cuda.deterministic = True
             model = BiRNNModel(args)
@@ -679,7 +679,7 @@ def main():
         else:
             model = BertForSequenceClassification.from_pretrained(args.trained_model_dir)
         logger.info("Scoring the evaluation sentences...")
-        print(model)
+        # print(model)
         model.to(args.device)
         model.eval()
         torch.cuda.empty_cache()
@@ -697,13 +697,13 @@ def main():
         logits_all = np.concatenate(logits_all, axis=0)
         preds = np.concatenate(preds, axis=0)
         targets = np.concatenate(targets, axis=0).reshape((-1, ))
-        print(logits_all.shape, preds.shape, targets.shape)
+        # print(logits_all.shape, preds.shape, targets.shape)
         result = compute_metrics(args.task_name, preds, targets)
 
-        print(preds, targets)
-        from sklearn.metrics import confusion_matrix
-        print(confusion_matrix(targets, preds))
-        print(result)
+        # print(preds, targets)
+        # from sklearn.metrics import confusion_matrix
+        # print(confusion_matrix(targets, preds))
+        logger.info("{}: {}".format(file[0][-20:], result))
         dev_dataset_raw = TabularDataset(os.path.join(args.data_dir, "dev.tsv"), format="tsv", 
             fields=get_original_dev_dataset_fields(args), skip_header=has_header(args.task_name))
         # sentence    label    pred    certainty_of_pred    certainty_of_label    logits
@@ -717,7 +717,7 @@ def main():
                 line = "{}\t{}\t{}\t{:.3f}\t{:.3f}\t{}\n".format(ex.sentence, label, pred, scores[pred], scores[label], logits_str)
                 f.write(line)
         exit(0)
-    args.max_steps = 1000
+    args.max_steps = 45
 
     ## STUDENT
     args.use_learned_embeddings = args.token_embeddings_from_teacher or args.use_word_vectors
@@ -847,6 +847,31 @@ def main():
                           student_type=args.student_type)
     distiller.train()
     logger.info("Let's go get some drinks.")
+
+    logger.info("FINAL SCORING OF PREV BEST CKPT AFTER GETTING BACK FROM THE PUB")
+    # args = distiller.params
+    torch.cuda.deterministic = True
+    model = BiRNNModel(args)
+    sdict = torch.load(distiller.prev_best_ckpt, map_location=args.device)
+    param_keys = model.load_state_dict(sdict, strict=True)
+    loaded_params = [p for p in model.state_dict() if p not in param_keys[0]]
+    num_loaded_params = sum([model.state_dict()[p].numel() for p in loaded_params])
+    num_all_params = sum([p.numel() for n, p in model.state_dict().items()])
+    model.to(args.device)
+    model.eval()
+    logits_all, preds, targets = [], [], []
+    for batch in distiller.dataset_eval:
+        with torch.no_grad():
+            logits = model((batch[0].to(args.device), batch[2].to(args.device)))
+        labels_pred = logits.max(1)[1]
+        logits_all.append(logits.detach().cpu().numpy())
+        preds.append(labels_pred.detach().cpu().numpy())
+        targets.append(batch[1].detach().cpu().numpy())
+    logits_all = np.concatenate(logits_all, axis=0)
+    preds = np.concatenate(preds, axis=0)
+    targets = np.concatenate(targets, axis=0).reshape((-1, ))
+    result = compute_metrics(args.task_name, preds, targets)
+    logger.info("Result of prev best ({}): {}".format(distiller.prev_best_ckpt, result))
 
 if __name__ == "__main__":
     main()
