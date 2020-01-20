@@ -421,7 +421,7 @@ class Distiller:
         if checkpoint_name is not None:
             if self.student_type == "BERT": mdl_to_save.config.save_pretrained(self.output_dir)
             state_dict = mdl_to_save.state_dict()
-            torch.save(state_dict, os.path.join(self.output_dir, checkpoint_name))
+            # torch.save(state_dict, os.path.join(self.output_dir, checkpoint_name))
             torch.save(self.student, os.path.join(self.output_dir, checkpoint_name+".pt"))
             
             """
@@ -444,12 +444,14 @@ class Distiller:
                 logger.info("CURRENT BEST (FRESHLY SAVED) {}: {}".format(checkpoint_name, results))
             """
         else:
+            pass
+            """
             if self.student_type == "BERT":
                 mdl_to_save.save_pretrained(self.output_dir)
             else:
                 state_dict = mdl_to_save.state_dict()
                 torch.save(state_dict, os.path.join(self.output_dir, "pytorch_model.bin"))
-
+            """
         # Good practice: save your training arguments together with the trained model
         torch.save(self.params, os.path.join(self.output_dir, 'training_args.bin'))
         
