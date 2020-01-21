@@ -171,6 +171,8 @@ def main():
                         help="Fully connected layer size in LSTM student.")
     parser.add_argument("--hidden_size", type=int, default=300,
                         help="LSTM layer size.")
+    parser.add_argument("--n_layers_lstm", type=int, default=1,
+                        help="Number of LSTM layers in the LSTM student.")
     parser.add_argument("--mode", default="multichannel", type=str,
                         help="Embedding mode. One of [rand, static, non-static, multichannel].")
 
