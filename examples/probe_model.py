@@ -4,7 +4,6 @@ import numpy as np
 import argparse, os
 from types import SimpleNamespace
 import torch
-from tqdm import tqdm
 
 from examples.distillation.utils import parse_str2bool
 from examples.distil_from_finetuned import create_word_level_tokenizer, numericalise_sentence
@@ -14,10 +13,10 @@ from pytorch_transformers.modeling_bert import BertForSequenceClassification
 def dict_to_namespace(d):
     return SimpleNamespace(**d)
 
-def numerisalise_batch(args, samples, tokenizer, cls_token, sep_token, pad_token_id):
+def numericalise_batch(args, samples, tokenizer, cls_token, sep_token, pad_token_id):
     numericalised_samples = {"sentence": []}
     if args["model_type"] == "BERT": numericalised_samples["attention_mask"] = []
-    for example in tqdm(samples[:2] if args["n_gpu"] <= 0 else samples):
+    for example in samples:
         example_numericalised = numericalise_sentence(dict_to_namespace(args), " ".join(example), tokenizer,
                                                       cls_token=cls_token, sep_token=sep_token, 
                                                       pad_token_id=pad_token_id)
@@ -34,57 +33,58 @@ def embed(args, batch):
         if args["model_type"] == "BERT":
             # outputs = (logits, (hidden_states)); len(hidden_states) = L+1; 0th element is top layer
             # each element of hidden states is (B, MSL, H)
-            logits, hidden_states = args["model"](input_ids=batch["sentence"].to(args["device"], attention_mask=batch["attention_mask"].to(args["device"]))
+            logits, hidden_states = args["model"](input_ids=batch["sentence"].to(args["device"]), attention_mask=batch["attention_mask"].to(args["device"]))
             L = len(hidden_states)
             if args["layer_to_probe"] >= len(hidden_states) or args["layer_to_probe"] < 0:
-                print("Requested layer {} out of range, returning embedding from last layer.".format(args["layer_to_probe"]))
-                return hidden_states[0].to("cpu")
+                return torch.flatten(hidden_states[0], start_dim=1)
             else:
-                return hidden_states[args["layer_to_probe"]].to("cpu")
+                return torch.flatten(hidden_states[args["layer_to_probe"]], start_dim=1)
         else:
             raise ValueError("NOT IMPLEMENTED")
 
 def prepare(args, samples):
-    print("Creating a tokenizer...")
-    model_args = torch.load(os.path.join(args["model_dir"], "training_args.bin"), map_location=args["device"])
-    args["max_seq_length"] = model_args.max_seq_length
-    if args["use_word_vectors"]:
-        vocab_file = os.path.join(args["glue_data_dir"], "transfer_set_vocab.txt")
-        args["processed_word_vectors_file"] = os.path.join(args["glue_data_dir"], "word_vectors")
-        args["do_lower_case"] = model_args.do_lower_case
-        tokenizer = create_word_level_tokenizer(dict_to_namespace(args), vocab_file, args["processed_word_vectors_file"], 
-                                                transfer_dataset_raw=None, transfer_dataset_raw_file=None)
-    else:
-        tokenizer = BertTokenizer.from_pretrained(args["model_dir"], do_lower_case=model_args.do_lower_case)
-    args["tokenizer"] = tokenizer
-    
-    args["cls_token"], args["sep_token"], pad_token = tokenizer.cls_token, tokenizer.sep_token, tokenizer.pad_token
-    args["pad_token_id"] = tokenizer.convert_tokens_to_ids([pad_token])[0]
-
-    print("Loading the trained model...")
-    if args["is_student"]:
-        file =  glob.glob(os.path.join(args["model_dir"], "pytorch_model_best*.pt"))
-        model = torch.load(file[0], map_location=args["device"])
-    else:
-        model = BertForSequenceClassification.from_pretrained(args["model_dir"])
-
-        model.bert.encoder.output_hidden_states = True
-        # print(model.bert.encoder)
-    model.to(args["device"])
-    model.eval()
-    args["model"] = model
-
     return
 
 def batcher(args, batch):
-    batch_numericalised = numerisalise_batch(args, batch, args["tokenizer"], args["cls_token"], args["sep_token"], args["pad_token_id"])
+    if "tokenizer" not in args:
+        print("Creating a tokenizer...")
+        model_args = torch.load(os.path.join(args["model_dir"], "training_args.bin"), map_location=args["device"])
+        args["max_seq_length"] = model_args.max_seq_length
+        if args["use_word_vectors"]:
+            vocab_file = os.path.join(args["glue_data_dir"], "transfer_set_vocab.txt")
+            args["processed_word_vectors_file"] = os.path.join(args["glue_data_dir"], "word_vectors")
+            args["do_lower_case"] = model_args.do_lower_case
+            tokenizer = create_word_level_tokenizer(dict_to_namespace(args), vocab_file, args["processed_word_vectors_file"], 
+                                                    transfer_dataset_raw=None, transfer_dataset_raw_file=None)
+        else:
+            tokenizer = BertTokenizer.from_pretrained(args["model_dir"], do_lower_case=model_args.do_lower_case)
+        args["tokenizer"] = tokenizer
+        
+        args["cls_token"], args["sep_token"], pad_token = tokenizer.cls_token, tokenizer.sep_token, tokenizer.pad_token
+        args["pad_token_id"] = tokenizer.convert_tokens_to_ids([pad_token])[0]
+
+    if "model" not in args:
+        print("Loading the trained model...")
+        if args["is_student"]:
+            file =  glob.glob(os.path.join(args["model_dir"], "pytorch_model_best*.pt"))
+            model = torch.load(file[0], map_location=args["device"])
+        else:
+            model = BertForSequenceClassification.from_pretrained(args["model_dir"])
+            model.bert.encoder.output_hidden_states = True
+        model.to(args["device"])
+        model.eval()
+        args["model"] = model
+
+    batch_numericalised = numericalise_batch(args, batch, args["tokenizer"], args["cls_token"], args["sep_token"], args["pad_token_id"])
     torch.cuda.empty_cache()
-    batch_embedded = embed(args, batch_numericalised)
+    batch_embedded = embed(args, batch_numericalised).to("cpu")
 
     return batch_embedded
 
 def main():
     parser = argparse.ArgumentParser(description="Training")
+    parser.add_argument("--out_dir", type=str, required=True,
+                        help="Directory where the results will be stored.")
     parser.add_argument("--senteval_path", default="/home/sam/edi/minfp2/SentEval", type=str, required=False,
                         help="SentEval path.")
     # parser.add_argument("--n_gpu", default="0", type=int, required=False,
@@ -106,6 +106,9 @@ def main():
     args.use_word_vectors = args.is_student and args.model_type == "LSTM" # TODO: make sure this is correct for BERT students!
     args.student_type = args.model_type
     args.layer_to_probe = -1
+    args.cached_embeddings_file = os.path.join(args.glue_data_dir, 
+        "probing_{}_{}".format("student" if args.is_student else "teacher", args.model_type))
+    args.dev_mode = True
    
     params = {'task_path': os.path.join(args.senteval_path, "data"), 
               'seed': 42,
@@ -114,10 +117,11 @@ def main():
               **args.__dict__}
     params['classifier'] = {'nhid': 100,  # in paper they chose from [50, 100, 200]
                             'optim': 'adam', 
-                            'batch_size': 64,
+                            'batch_size': 64 if not args.dev_mode else 4,
                             'tenacity': 5, 
                             'epoch_size': 4,
-                            'dropout': 0.1, # in paper they chose from [0.0, 0.1, 0.2]
+                            'dropout': 0.1, # in paper they chose from [0.0, 0.1, 0.2],
+                            'cudaEfficient': True,
                             }
     transfer_tasks = ['Length', 'WordContent', 'Depth', 'TopConstituents','BigramShift', 'Tense',
     'SubjNumber', 'ObjNumber', 'OddManOut', 'CoordinationInversion']
@@ -129,8 +133,14 @@ def main():
     """
 
     se = senteval.engine.SE(params, batcher, prepare)
-    results = se.eval(transfer_tasks)
-    print(results)
+    results = se.eval(transfer_tasks, dev_mode=args.dev_mode)
+    
+    with open(os.path.join(args.out_dir, "results.csv"), "w") as f:
+        f.write("task,devacc,acc,ndev,ntest\n")
+        for task, task_results in results.items():
+            line = "{},{},{},{},{}".format(task, task_results["devacc"], task_results["acc"], task_results["ndev"], task_results["ntest"])
+            f.write("{}\n".format(line))
+            print(line)
 
 if __name__ == '__main__':
     main()
