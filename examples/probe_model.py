@@ -34,13 +34,13 @@ def embed(args, batch):
         if args["model_type"] == "BERT":
             # outputs = (logits, (hidden_states)); len(hidden_states) = L+1; 0th element is top layer
             # each element of hidden states is (B, MSL, H)
-            logits, hidden_states = args["model"](input_ids=batch["sentence"], attention_mask=batch["attention_mask"])
+            logits, hidden_states = args["model"](input_ids=batch["sentence"].to(args["device"], attention_mask=batch["attention_mask"].to(args["device"]))
             L = len(hidden_states)
             if args["layer_to_probe"] >= len(hidden_states) or args["layer_to_probe"] < 0:
                 print("Requested layer {} out of range, returning embedding from last layer.".format(args["layer_to_probe"]))
-                return hidden_states[0]
+                return hidden_states[0].to("cpu")
             else:
-                return hidden_states[args["layer_to_probe"]]
+                return hidden_states[args["layer_to_probe"]].to("cpu")
         else:
             raise ValueError("NOT IMPLEMENTED")
 
