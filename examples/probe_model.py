@@ -114,6 +114,7 @@ def main():
               'seed': 42,
               'usepytorch': True, # args.n_gpu > 0, 
               'kfold': 10,
+              'batch_size': 512,
               **args.__dict__}
     params['classifier'] = {'nhid': 100,  # in paper they chose from [50, 100, 200]
                             'optim': 'adam', 
