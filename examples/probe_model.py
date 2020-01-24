@@ -108,7 +108,7 @@ def main():
     args.layer_to_probe = -1
     args.cached_embeddings_file = os.path.join(args.glue_data_dir, 
         "probing_{}_{}".format("student" if args.is_student else "teacher", args.model_type))
-    args.dev_mode = True
+    args.dev_mode = not torch.cuda.is_available()
    
     params = {'task_path': os.path.join(args.senteval_path, "data"), 
               'seed': 42,
