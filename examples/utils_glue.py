@@ -594,13 +594,15 @@ def pearson_and_spearman(preds, labels):
         "corr": (pearson_corr + spearman_corr) / 2,
     }
 
+def micro_f1(preds, labels):
+    return f1_score(y_true=labels, y_pred=preds, average="micro")
 
 def compute_metrics(task_name, preds, labels, additional_metrics=[]):
     assert len(preds) == len(labels)
     if task_name == "cola":
         results = {"mcc": matthews_corrcoef(labels, preds)}
     elif task_name == "sara":
-        results = {"f1-macro": None, "f1-micro": None} # TO-DO: implement
+        results = {"f1-micro": micro_f1(preds, labels)}
     elif task_name == "sst-2":
         results = {"acc": simple_accuracy(preds, labels)}
     elif task_name == "mrpc":
