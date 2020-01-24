@@ -166,9 +166,9 @@ def train(args, train_dataset, model, tokenizer):
                     epoch_progress = epoch_number*steps_per_epoch + step
                     if args.local_rank == -1 and args.evaluate_during_training:  # Only evaluate when single GPU otherwise metrics may not average well
                         results = evaluate(args, model, tokenizer, prefix="e{}s{}".format(epoch_number, step))
-                        results_str = ", ".join(["{}: {:.5f}".format(k, v) for k, v in results.items() if k != "conf_mtrx"])
+                        results_str = ", ".join(["{}: {:.5f}".format(k, v) for k, v in results.items() if k != "additional"])
                         for key, value in results.items():
-                            if key == "conf_mtrx": continue
+                            if key == "additional": continue
                             tb_writer.add_scalar('eval_{}'.format(key), value, epoch_progress)
                     else:
                         results_str = None
