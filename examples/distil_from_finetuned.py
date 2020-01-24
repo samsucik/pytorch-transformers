@@ -34,14 +34,387 @@ from torchtext.vocab import Vectors
 from pytorch_transformers.tokenization_bert import BasicTokenizer
 from pytorch_transformers import BertTokenizer, BertForSequenceClassification, BertConfig
 
-from distillation.distiller_from_finetuned import Distiller
-from distillation.utils import logger, init_gpu_params, set_seed, parse_str2bool
-from distillation.dataset import Dataset
-from distillation.tokenization_word import WordTokenizer
-from distillation.bi_rnn import BiRNNModel
+from examples.distillation.distiller_from_finetuned import Distiller
+from examples.distillation.utils import logger, init_gpu_params, set_seed, parse_str2bool
+from examples.distillation.dataset import Dataset
+from examples.distillation.tokenization_word import WordTokenizer
+from examples.distillation.bi_rnn import BiRNNModel
 
-from utils_glue import processors, compute_metrics
+from examples.utils_glue import processors, compute_metrics
 
+def add_logits(args, teacher, token_ids, attention_masks):
+    logger.info("Generating logits using the teacher model")
+    dataset = TensorDataset(token_ids, attention_masks)
+    B = 512 # use 128 on 6GB GPUs, or 512*N_GPUS on 12GB GPUs
+    dataloader = DataLoader(dataset, batch_size=B, shuffle=False)
+    all_logits = None
+    teacher.eval()
+    for i, batch in enumerate(tqdm(dataloader)):
+        batch = tuple(t.to(args.device) for t in batch)
+        input_ids = batch[0]
+        attention_mask = batch[1]
+        with torch.no_grad():
+            logits = teacher(input_ids=input_ids, attention_mask=attention_mask)[0]
+        if all_logits is None:
+            all_logits = logits
+        else:
+            all_logits = torch.cat([all_logits, logits], dim=0)
+    return all_logits
+
+def compress_embeddings_raunak(args, embeddings_tensor: torch.Tensor, new_dim=256, D1=5, D3=0):
+    from sklearn.decomposition import PCA
+    embeddings = embeddings_tensor.numpy()
+    old_dim = embeddings.shape[1]
+    print(embeddings.shape, old_dim)
+    
+    # preprocessing
+    pca1 =  PCA(n_components=old_dim)
+    z = embeddings - np.mean(embeddings, axis=0)
+    pca1.fit(z)
+    U1 = pca1.components_
+    z1 = []
+    for i, x in enumerate(z):
+        for u in U1[0:D1]:
+            x = x - np.dot(u.T, x) * u 
+        z1.append(x)
+    z1 = np.asarray(z1)
+
+    # PCA dimensionality reduction
+    pca2 =  PCA(n_components=new_dim)
+    z2 = z1 - np.mean(z1, axis=0)
+    z2 = pca2.fit_transform(z2)
+    pca3 = PCA(n_components=new_dim)
+    z3 = z2 - np.mean(z2, axis=0)
+    pca3.fit(z3)
+    U3 = pca3.components_
+
+    # postprocessing
+    if D3 > 0:
+        U3 = pca3.components_
+        z4 = []
+        for i, x in enumerate(z3):
+            for u in U3[0:D3]:
+                x = x - np.dot(u.T, x) * u 
+            z4.append(x)
+        embeddings_new = np.asarray(z4)
+    else:
+        embeddings_new = z3
+
+    return torch.from_numpy(embeddings_new).float().to(args.device)
+
+def basic_tokenize(text, **tokenizer_kwargs): return BasicTokenizer(**tokenizer_kwargs).tokenize(text)
+
+def uniform_unk_init(a=-0.25, b=0.25): return lambda tensor: tensor.uniform_(a, b)
+
+def has_header(task_name, portion="train"):
+    if task_name == "cola":
+        if portion in ["train", "dev"]:
+            return False
+        else:
+            return True
+    elif task_name == "sst-2":
+        return True
+    elif task_name == "sara":
+        return False
+    else:
+        raise ValueError("Unrecognised task name: {}".format(args.task_name))
+
+def numericalise_sentence(args, sentence, tokenizer, cls_token="[CLS]", sep_token="[SEP]", pad_token_id=0, force_pad=0):
+    tokens = tokenizer.tokenize(sentence)
+    if args.max_seq_length > 0 and len(tokens) > args.max_seq_length - 2:
+        tokens = tokens[:(args.max_seq_length - 2)]
+    tokens = ([cls_token] if cls_token is not None else []) + tokens + ([sep_token] if cls_token is not None else [])
+    token_ids = tokenizer.convert_tokens_to_ids(tokens)
+    if args.max_seq_length > 0 or force_pad > 0:
+        token_ids += [pad_token_id] * (max(args.max_seq_length, force_pad) - len(token_ids))
+    return token_ids
+
+def get_original_dev_dataset_fields(args):
+    text_field = Field(use_vocab=False, tokenize=lambda s: s, batch_first=True, lower=args.do_lower_case)
+    label_field = Field(sequential=False, use_vocab=False, batch_first=True)
+    if args.task_name == "cola":
+        # gj04    0   *   They drank the pub.
+        return [("guid", None), ("label", label_field), ("acceptability", None), ("sentence", text_field)]
+    elif args.task_name == "sst-2":
+        # hide new secretions from the parental units     0
+        return [("sentence", text_field), ("label", None)]
+    elif args.task_name == "sara":
+        # 0 Yep that's fine
+        return [("label", None), ("sentence", text_field)]
+    else:
+        raise ValueError("Unrecognised task name: {}".format(args.task_name))
+
+def get_original_train_dataset_fields(args):
+    text_field = Field(use_vocab=False, tokenize=lambda s: s, lower=args.do_lower_case, batch_first=True)
+    if args.task_name == "cola":
+        # gj04    0   *   They drank the pub.
+        return [("guid", None), ("label", None), ("acceptability", None), ("sentence", text_field)]
+    elif args.task_name == "sst-2":
+        # hide new secretions from the parental units     0
+        return [("sentence", text_field), ("label", None)]
+    elif args.task_name == "sara":
+        # 0 Yep that's fine
+        return [("label", None), ("sentence", text_field)]
+    else:
+        raise ValueError("Unrecognised task name: {}".format(args.task_name))
+
+def get_n_classes(task_name):
+    if task_name == "cola":
+        n_classes = 2
+    elif task_name == "sst-2":
+        n_classes = 2
+    elif task_name == "sara":
+        n_classes = 57
+    else:
+        raise ValueError("Unrecognised task name: {}".format(task_name))
+    return n_classes    
+
+def get_augmented_dataset_fields(args):
+    n_classes = get_n_classes(args.task_name)
+    text_field = Field(tokenize=basic_tokenize, lower=args.do_lower_case, batch_first=True)
+    logit_fields = [("logit_{}".format(i), Field(sequential=False, use_vocab=False, batch_first=True, dtype=torch.float)) 
+                    for i in range(n_classes)]
+
+    # return [("label", None), ("sentence", text_field)] + logit_fields
+    return [("sentence", text_field)] + logit_fields
+
+def create_raw_transfer_set(args, cached_dataset_file):
+    if not os.path.exists(cached_dataset_file):
+        logger.info("Creating the raw transfer set with teacher logits")
+        # get original set
+        fields = get_original_train_dataset_fields(args)
+        original_train_file = os.path.join(args.data_dir, "train.tsv")
+        original_train_set = TabularDataset(original_train_file, format="tsv", fields=fields, skip_header=has_header(args.task_name))
+
+        # get augmentation set
+        augmentation_file = os.path.join(args.data_dir, "sampled_sentences")
+        augmentation_fields = [("sentence", Field(use_vocab=False, tokenize=lambda s: s[2:], lower=args.do_lower_case, batch_first=True))] # drop first 2 chars!
+        augmentation_set = TabularDataset(augmentation_file, format="tsv", fields=augmentation_fields, skip_header=False)
+
+        # merge to create entire transfer set
+        combined_transfer_set = original_train_set
+        combined_transfer_set.examples += augmentation_set.examples
+
+        # TO-DO delete once everything works
+        # combined_transfer_set.examples = combined_transfer_set.examples[:5]
+
+        # numericalise and pad the sentences
+        tokenizer_teacher = BertTokenizer.from_pretrained(args.teacher_name, do_lower_case=args.do_lower_case)
+        numericalised_transfer_set = []
+        attention_masks = []
+        cls_token, sep_token, pad_token = tokenizer_teacher.cls_token, tokenizer_teacher.sep_token, tokenizer_teacher.pad_token
+        pad_token_id = tokenizer_teacher.convert_tokens_to_ids([pad_token])[0]
+
+        logger.info("Numericalising the transfer set using the teacher's tokenizer")
+        for example in tqdm(combined_transfer_set.examples):
+            example_numericalised = numericalise_sentence(args, example.sentence, tokenizer_teacher, 
+                                                          cls_token=cls_token, sep_token=sep_token, 
+                                                          pad_token_id=pad_token_id, force_pad=128)
+            mask = (np.array(example_numericalised) != pad_token_id).astype(int)
+            attention_masks.append(torch.LongTensor(mask))
+            numericalised_transfer_set.append(torch.LongTensor(example_numericalised))
+        numericalised_transfer_set = torch.stack(numericalised_transfer_set)
+        attention_masks = torch.stack(attention_masks)
+        
+        # add teacher logits
+        teacher = BertForSequenceClassification.from_pretrained(args.teacher_name) # take outputs[1] for the logits
+        teacher.to(args.device)
+        logits = add_logits(args, teacher, numericalised_transfer_set, attention_masks)
+
+        # """
+        # write sentences and logits into TSV
+        with open(cached_dataset_file, "w") as writer:
+            n_logits = logits.shape[1]
+            writer.write("sentence\t" + "\t".join(["logit_{}".format(i) for i in range(n_logits)]) + "\n")
+            for i, ex in enumerate(combined_transfer_set.examples):
+                soft_labels = logits[i, :].cpu().numpy()
+                soft_labels_str = "\t".join([str(logit) for logit in soft_labels])
+                writer.write("{}\t".format(ex.sentence) + soft_labels_str + "\n")
+        """
+        n_logits = logits.shape[1]
+        for i, ex in enumerate(combined_transfer_set.examples):
+            soft_labels = logits[i, :].cpu().numpy()
+            soft_labels_str = "\t".join([str(logit) for logit in soft_labels])
+            print("{}\t".format(ex.sentence) + soft_labels_str)
+        exit(0)
+        """
+    
+    # read the dataset from TSV
+    logger.info("Loading raw transfer set from TSV file {}".format(cached_dataset_file))
+    fields = get_augmented_dataset_fields(args)
+    train_set = TabularDataset(cached_dataset_file, format="tsv", fields=fields, skip_header=True)
+
+    return train_set
+
+def create_numerical_transfer_set(args, transfer_dataset_numerical_file, tokenizer, transfer_dataset_raw=None):
+    if not os.path.exists(transfer_dataset_numerical_file):
+        logger.info("Creating numerical transfer dataset from the raw one")
+        transfer_dataset_numerical = {"sentence": [], "logits": []}
+        if args.student_type == "BERT": transfer_dataset_numerical["attention_mask"] = []
+        cls_token, sep_token = tokenizer.cls_token, tokenizer.sep_token
+        pad_token_id = tokenizer.convert_tokens_to_ids([tokenizer.pad_token])[0]
+        n_classes = get_n_classes(args.task_name)
+        logit_names = ["logit_{}".format(c) for c in range(n_classes)]
+        logger.info("Numericalising the transfer set using the student's tokenizer")
+        for example in tqdm(transfer_dataset_raw.examples):
+            # here, the sentence is already tokenized into words, which is OK (when using wordpieces, not words)
+            # ONLY IF BertTokenizer has do_basic_tokenize set to True -- but that's the (sensible) default.
+            sentence = " ".join(example.sentence)
+            example_numericalised = numericalise_sentence(args, sentence, tokenizer, 
+                                                          cls_token=cls_token, sep_token=sep_token, 
+                                                          pad_token_id=pad_token_id)
+            example_logits = [float(getattr(example, logit_name)) for logit_name in logit_names]
+            if args.student_type == "BERT":
+                mask = (np.array(example_numericalised) != pad_token_id).astype(int)
+                transfer_dataset_numerical["attention_mask"].append(torch.LongTensor(mask))
+            transfer_dataset_numerical["sentence"].append(torch.LongTensor(example_numericalised))
+            transfer_dataset_numerical["logits"].append(torch.FloatTensor(example_logits))
+        torch.save(transfer_dataset_numerical, transfer_dataset_numerical_file)
+    else:
+        logger.info("Loading the numerical transfer dataset from binary file: {}".format(transfer_dataset_numerical_file))
+        transfer_dataset_numerical = torch.load(transfer_dataset_numerical_file, map_location=args.device)
+    
+    # padding according to longest sentence when using LSTM
+    if not args.max_seq_length > 0:
+        lens = [len(sent) for sent in transfer_dataset_numerical["sentence"]]
+        transfer_dataset_numerical["sentence_length"] = torch.LongTensor(lens)
+        pad_token_id = tokenizer.convert_tokens_to_ids([tokenizer.pad_token])[0]
+        transfer_dataset_numerical = pad_sentences_to_longest(args, transfer_dataset_numerical, max(lens), pad_token_id)
+    else:
+        transfer_dataset_numerical["sentence_length"] = torch.LongTensor([0 for i in range(len(transfer_dataset_numerical["sentence"]))])
+
+    if args.student_type == "BERT":
+        transfer_dataset_numerical["attention_mask"] = torch.stack(transfer_dataset_numerical["attention_mask"])
+    transfer_dataset_numerical["sentence"] = torch.stack(transfer_dataset_numerical["sentence"])
+    transfer_dataset_numerical["logits"] = torch.stack(transfer_dataset_numerical["logits"])
+    if args.student_type == "BERT":
+        transfer_dataset = TensorDataset(transfer_dataset_numerical["sentence"], transfer_dataset_numerical["logits"], 
+                                         transfer_dataset_numerical["sentence_length"], transfer_dataset_numerical["attention_mask"])
+    else:
+        transfer_dataset = TensorDataset(transfer_dataset_numerical["sentence"], transfer_dataset_numerical["logits"], 
+                                         transfer_dataset_numerical["sentence_length"])
+    transfer_dataset_sampler = RandomSampler(transfer_dataset)
+    transfer_dataset = DataLoader(transfer_dataset, sampler=transfer_dataset_sampler, batch_size=args.batch_size)
+
+    return transfer_dataset
+
+def pad_sentences_to_longest(args, dataset, target_len, pad_token_id):
+    for i in range(len(dataset["sentence"])):
+        sent_len = len(dataset["sentence"][i])
+        padding = torch.LongTensor([pad_token_id]*(target_len - sent_len))
+        dataset["sentence"][i] = torch.cat((dataset["sentence"][i].to(args.device), padding.to(args.device))).to(args.device)
+    return dataset
+
+def create_numerical_dev_set(args, dev_dataset_numerical_file, tokenizer):
+    if not os.path.isfile(dev_dataset_numerical_file):
+        fields = get_original_dev_dataset_fields(args)
+        dev_dataset_raw_file = os.path.join(args.data_dir, "dev.tsv")
+        dev_dataset_raw = TabularDataset(dev_dataset_raw_file, format="tsv", fields=fields, skip_header=has_header(args.task_name))
+        cls_token, sep_token, pad_token = tokenizer.cls_token, tokenizer.sep_token, tokenizer.pad_token
+        pad_token_id = tokenizer.convert_tokens_to_ids([pad_token])[0]
+        dev_dataset_numerical = {"sentence": [], "label": []}
+        if args.student_type == "BERT": dev_dataset_numerical["attention_mask"] = []
+        for example in tqdm(dev_dataset_raw.examples):
+            # here, the sentence is already tokenized into words, which is OK (when using wordpieces, not words)
+            # ONLY IF BertTokenizer has do_basic_tokenize set to True -- but that's the (sensible) default.
+            example_numericalised = numericalise_sentence(args, example.sentence, tokenizer, 
+                                                          cls_token=cls_token, sep_token=sep_token, 
+                                                          pad_token_id=pad_token_id)
+            if args.student_type == "BERT":
+                mask = (np.array(example_numericalised) != pad_token_id).astype(int)
+                dev_dataset_numerical["attention_mask"].append(torch.LongTensor(mask))
+            dev_dataset_numerical["sentence"].append(torch.LongTensor(example_numericalised))
+            dev_dataset_numerical["label"].append(torch.LongTensor([int(example.label)]))
+        torch.save(dev_dataset_numerical, dev_dataset_numerical_file)
+    else:
+        dev_dataset_numerical = torch.load(dev_dataset_numerical_file, map_location=args.device)
+    
+    # padding according to longest sentence when using LSTM
+    if args.student_type == "LSTM":
+        lens = [len(sent) for sent in dev_dataset_numerical["sentence"]]
+        dev_dataset_numerical["sentence_length"] = torch.LongTensor(lens)
+        pad_token_id = tokenizer.convert_tokens_to_ids([tokenizer.pad_token_id])[0]
+        dev_dataset_numerical = pad_sentences_to_longest(args, dev_dataset_numerical, max(lens), pad_token_id)
+    else:
+        dev_dataset_numerical["sentence_length"] = torch.LongTensor([0 for i in range(len(dev_dataset_numerical["sentence"]))])
+        
+    if args.student_type == "BERT": dev_dataset_numerical["attention_mask"] = torch.stack(dev_dataset_numerical["attention_mask"])
+    dev_dataset_numerical["sentence"] = torch.stack(dev_dataset_numerical["sentence"])
+    dev_dataset_numerical["label"] = torch.stack(dev_dataset_numerical["label"])
+    if args.student_type == "BERT":
+        dev_dataset = TensorDataset(dev_dataset_numerical["sentence"], dev_dataset_numerical["label"], 
+                                    dev_dataset_numerical["sentence_length"], dev_dataset_numerical["attention_mask"])
+    else:
+        dev_dataset = TensorDataset(dev_dataset_numerical["sentence"], dev_dataset_numerical["label"], 
+                                    dev_dataset_numerical["sentence_length"])
+    dev_dataset_sampler = SequentialSampler(dev_dataset)
+    dev_dataset = DataLoader(dev_dataset, sampler=dev_dataset_sampler, batch_size=args.per_gpu_eval_batch_size)
+    
+    return dev_dataset
+
+def evaluate_model(params: SimpleNamespace):
+    # params contains:
+    # - dataset
+    # - model
+    # - task_name
+    # - device
+    # - student type
+    params.model.eval()
+    preds, targets = None, None
+    for batch in params.dataset:
+        batch = tuple(t.to(params.device) for t in batch)
+        with torch.no_grad():
+            # dev dataset contains: [sentence, label, sentence_length, attention_mask]
+            if params.student_type == "BERT":
+                logits = params.model(batch[0], attention_mask=batch[3])[0]
+            # dev dataset contains: [sentence, label, sentence_length]
+            else: # feed LSTM also with sentence lengths
+                logits = params.model((batch[0], batch[2]))
+        labels_pred = logits.max(1)[1]
+        if preds is None:
+            preds = labels_pred.detach().cpu().numpy()
+            targets = batch[1].detach().cpu().numpy()
+        else:
+            preds = np.append(preds, labels_pred.detach().cpu().numpy(), axis=0)
+            targets = np.append(targets, batch[1].detach().cpu().numpy(), axis=0)
+    result = compute_metrics(params.task_name, preds, targets)
+    return result
+
+def create_word_level_tokenizer(args, vocab_file, processed_word_vectors_file, transfer_dataset_raw, transfer_dataset_raw_file):
+    if not os.path.isfile(vocab_file) or not os.path.isfile(processed_word_vectors_file):
+        if transfer_dataset_raw is None:
+            logger.info("Creating the raw (TSV) transfer set as it doesn't exist but is needed to construct student's word-level tokenizer")
+            transfer_dataset_raw = create_raw_transfer_set(args, transfer_dataset_raw_file)
+        logger.info("Creating vocab file from the transfer set")
+        vectors = Vectors(name=args.word_vectors_file, cache=args.word_vectors_dir, unk_init=uniform_unk_init())
+        text_field = transfer_dataset_raw.fields["sentence"]
+        text_field.build_vocab(transfer_dataset_raw, vectors=vectors, min_freq=1)
+        with open(vocab_file, "w", encoding="utf-8") as writer:
+            for word in text_field.vocab.itos:
+                writer.write(word + u'\n')
+        torch.save(text_field.vocab.vectors, processed_word_vectors_file)
+
+    # create tokenizer using that vocab file name and config from teacher directory
+    if args.student_type == "BERT":
+        special_tokens_map = {"unk_token": "<unk>", "pad_token": "<pad>", "cls_token": "<cls>", "sep_token": "<sep>"}
+    else:
+        special_tokens_map = {"unk_token": "<unk>", "pad_token": "<pad>"}
+
+    tokenizer = WordTokenizer(vocab_file=vocab_file, do_lower_case=args.do_lower_case, 
+                              max_len=(args.max_seq_length if args.student_type == "BERT" else None))
+    tokenizer.add_special_tokens(special_tokens_map)
+
+    special_tok_ids = {}
+    for tok_name, tok_symbol in special_tokens_map.items():
+        idx = tokenizer.encode(tok_symbol)[0]
+        special_tok_ids[tok_name] = idx
+    logger.info("Special tokens: {}".format(special_tok_ids))
+    args.special_tok_ids = special_tok_ids
+    return tokenizer
+
+def softmax(x):
+    return np.exp(np.array(x))/sum(np.exp(np.array(x)))
+    
 def main():
     parser = argparse.ArgumentParser(description="Training")
     parser.add_argument("--student_type", default="BERT", type=str, required=False,
@@ -221,379 +594,6 @@ def main():
         args.local_rank = -1
     else:  # Initializes the distributed backend which will take care of sychronizing nodes/GPUs
         args.device = torch.device("cuda", args.local_rank)
-
-    def add_logits(args, teacher, token_ids, attention_masks):
-        logger.info("Generating logits using the teacher model")
-        dataset = TensorDataset(token_ids, attention_masks)
-        B = 512 # use 128 on 6GB GPUs, or 512*N_GPUS on 12GB GPUs
-        dataloader = DataLoader(dataset, batch_size=B, shuffle=False)
-        all_logits = None
-        teacher.eval()
-        for i, batch in enumerate(tqdm(dataloader)):
-            batch = tuple(t.to(args.device) for t in batch)
-            input_ids = batch[0]
-            attention_mask = batch[1]
-            with torch.no_grad():
-                logits = teacher(input_ids=input_ids, attention_mask=attention_mask)[0]
-            if all_logits is None:
-                all_logits = logits
-            else:
-                all_logits = torch.cat([all_logits, logits], dim=0)
-        return all_logits
-
-    def compress_embeddings_raunak(args, embeddings_tensor: torch.Tensor, new_dim=256, D1=5, D3=0):
-        from sklearn.decomposition import PCA
-        embeddings = embeddings_tensor.numpy()
-        old_dim = embeddings.shape[1]
-        print(embeddings.shape, old_dim)
-        
-        # preprocessing
-        pca1 =  PCA(n_components=old_dim)
-        z = embeddings - np.mean(embeddings, axis=0)
-        pca1.fit(z)
-        U1 = pca1.components_
-        z1 = []
-        for i, x in enumerate(z):
-            for u in U1[0:D1]:
-                x = x - np.dot(u.T, x) * u 
-            z1.append(x)
-        z1 = np.asarray(z1)
-
-        # PCA dimensionality reduction
-        pca2 =  PCA(n_components=new_dim)
-        z2 = z1 - np.mean(z1, axis=0)
-        z2 = pca2.fit_transform(z2)
-        pca3 = PCA(n_components=new_dim)
-        z3 = z2 - np.mean(z2, axis=0)
-        pca3.fit(z3)
-        U3 = pca3.components_
-
-        # postprocessing
-        if D3 > 0:
-            U3 = pca3.components_
-            z4 = []
-            for i, x in enumerate(z3):
-                for u in U3[0:D3]:
-                    x = x - np.dot(u.T, x) * u 
-                z4.append(x)
-            embeddings_new = np.asarray(z4)
-        else:
-            embeddings_new = z3
-
-        return torch.from_numpy(embeddings_new).float().to(args.device)
-
-    def basic_tokenize(text, **tokenizer_kwargs): return BasicTokenizer(**tokenizer_kwargs).tokenize(text)
-    
-    def uniform_unk_init(a=-0.25, b=0.25): return lambda tensor: tensor.uniform_(a, b)
-    
-    def has_header(task_name, portion="train"):
-        if task_name == "cola":
-            if portion in ["train", "dev"]:
-                return False
-            else:
-                return True
-        elif task_name == "sst-2":
-            return True
-        elif task_name == "sara":
-            return False
-        else:
-            raise ValueError("Unrecognised task name: {}".format(args.task_name))
-
-    def numericalise_sentence(args, sentence, tokenizer, cls_token="[CLS]", sep_token="[SEP]", pad_token_id=0, force_pad=0):
-        tokens = tokenizer.tokenize(sentence)
-        if args.max_seq_length > 0 and len(tokens) > args.max_seq_length - 2:
-            tokens = tokens[:(args.max_seq_length - 2)]
-        tokens = ([cls_token] if cls_token is not None else []) + tokens + ([sep_token] if cls_token is not None else [])
-        token_ids = tokenizer.convert_tokens_to_ids(tokens)
-        if args.max_seq_length > 0 or force_pad > 0:
-            token_ids += [pad_token_id] * (max(args.max_seq_length, force_pad) - len(token_ids))
-        return token_ids
-
-    def get_original_dev_dataset_fields(args):
-        text_field = Field(use_vocab=False, tokenize=lambda s: s, batch_first=True, lower=args.do_lower_case)
-        label_field = Field(sequential=False, use_vocab=False, batch_first=True)
-        if args.task_name == "cola":
-            # gj04    0   *   They drank the pub.
-            return [("guid", None), ("label", label_field), ("acceptability", None), ("sentence", text_field)]
-        elif args.task_name == "sst-2":
-            # hide new secretions from the parental units     0
-            return [("sentence", text_field), ("label", None)]
-        elif args.task_name == "sara":
-            # 0 Yep that's fine
-            return [("label", None), ("sentence", text_field)]
-        else:
-            raise ValueError("Unrecognised task name: {}".format(args.task_name))
-
-    def get_original_train_dataset_fields(args):
-        text_field = Field(use_vocab=False, tokenize=lambda s: s, lower=args.do_lower_case, batch_first=True)
-        if args.task_name == "cola":
-            # gj04    0   *   They drank the pub.
-            return [("guid", None), ("label", None), ("acceptability", None), ("sentence", text_field)]
-        elif args.task_name == "sst-2":
-            # hide new secretions from the parental units     0
-            return [("sentence", text_field), ("label", None)]
-        elif args.task_name == "sara":
-            # 0 Yep that's fine
-            return [("label", None), ("sentence", text_field)]
-        else:
-            raise ValueError("Unrecognised task name: {}".format(args.task_name))
-
-    def get_n_classes(task_name):
-        if task_name == "cola":
-            n_classes = 2
-        elif task_name == "sst-2":
-            n_classes = 2
-        elif task_name == "sara":
-            n_classes = 57
-        else:
-            raise ValueError("Unrecognised task name: {}".format(task_name))
-        return n_classes    
-
-    def get_augmented_dataset_fields(args):
-        n_classes = get_n_classes(args.task_name)
-        text_field = Field(tokenize=basic_tokenize, lower=args.do_lower_case, batch_first=True)
-        logit_fields = [("logit_{}".format(i), Field(sequential=False, use_vocab=False, batch_first=True, dtype=torch.float)) 
-                        for i in range(n_classes)]
-
-        # return [("label", None), ("sentence", text_field)] + logit_fields
-        return [("sentence", text_field)] + logit_fields
-
-    def create_raw_transfer_set(args, cached_dataset_file):
-        if not os.path.exists(cached_dataset_file):
-            logger.info("Creating the raw transfer set with teacher logits")
-            # get original set
-            fields = get_original_train_dataset_fields(args)
-            original_train_file = os.path.join(args.data_dir, "train.tsv")
-            original_train_set = TabularDataset(original_train_file, format="tsv", fields=fields, skip_header=has_header(args.task_name))
-
-            # get augmentation set
-            augmentation_file = os.path.join(args.data_dir, "sampled_sentences")
-            augmentation_fields = [("sentence", Field(use_vocab=False, tokenize=lambda s: s[2:], lower=args.do_lower_case, batch_first=True))] # drop first 2 chars!
-            augmentation_set = TabularDataset(augmentation_file, format="tsv", fields=augmentation_fields, skip_header=False)
-
-            # merge to create entire transfer set
-            combined_transfer_set = original_train_set
-            combined_transfer_set.examples += augmentation_set.examples
-
-            # TO-DO delete once everything works
-            # combined_transfer_set.examples = combined_transfer_set.examples[:5]
-
-            # numericalise and pad the sentences
-            tokenizer_teacher = BertTokenizer.from_pretrained(args.teacher_name, do_lower_case=args.do_lower_case)
-            numericalised_transfer_set = []
-            attention_masks = []
-            cls_token, sep_token, pad_token = tokenizer_teacher.cls_token, tokenizer_teacher.sep_token, tokenizer_teacher.pad_token
-            pad_token_id = tokenizer_teacher.convert_tokens_to_ids([pad_token])[0]
-
-            logger.info("Numericalising the transfer set using the teacher's tokenizer")
-            for example in tqdm(combined_transfer_set.examples):
-                example_numericalised = numericalise_sentence(args, example.sentence, tokenizer_teacher, 
-                                                              cls_token=cls_token, sep_token=sep_token, 
-                                                              pad_token_id=pad_token_id, force_pad=128)
-                mask = (np.array(example_numericalised) != pad_token_id).astype(int)
-                attention_masks.append(torch.LongTensor(mask))
-                numericalised_transfer_set.append(torch.LongTensor(example_numericalised))
-            numericalised_transfer_set = torch.stack(numericalised_transfer_set)
-            attention_masks = torch.stack(attention_masks)
-            
-            # add teacher logits
-            teacher = BertForSequenceClassification.from_pretrained(args.teacher_name) # take outputs[1] for the logits
-            teacher.to(args.device)
-            logits = add_logits(args, teacher, numericalised_transfer_set, attention_masks)
-
-            # """
-            # write sentences and logits into TSV
-            with open(cached_dataset_file, "w") as writer:
-                n_logits = logits.shape[1]
-                writer.write("sentence\t" + "\t".join(["logit_{}".format(i) for i in range(n_logits)]) + "\n")
-                for i, ex in enumerate(combined_transfer_set.examples):
-                    soft_labels = logits[i, :].cpu().numpy()
-                    soft_labels_str = "\t".join([str(logit) for logit in soft_labels])
-                    writer.write("{}\t".format(ex.sentence) + soft_labels_str + "\n")
-            """
-            n_logits = logits.shape[1]
-            for i, ex in enumerate(combined_transfer_set.examples):
-                soft_labels = logits[i, :].cpu().numpy()
-                soft_labels_str = "\t".join([str(logit) for logit in soft_labels])
-                print("{}\t".format(ex.sentence) + soft_labels_str)
-            exit(0)
-            """
-        
-        # read the dataset from TSV
-        logger.info("Loading raw transfer set from TSV file {}".format(cached_dataset_file))
-        fields = get_augmented_dataset_fields(args)
-        train_set = TabularDataset(cached_dataset_file, format="tsv", fields=fields, skip_header=True)
-
-        return train_set
-
-    def create_numerical_transfer_set(args, transfer_dataset_numerical_file, tokenizer, transfer_dataset_raw=None):
-        if not os.path.exists(transfer_dataset_numerical_file):
-            logger.info("Creating numerical transfer dataset from the raw one")
-            transfer_dataset_numerical = {"sentence": [], "logits": []}
-            if args.student_type == "BERT": transfer_dataset_numerical["attention_mask"] = []
-            cls_token, sep_token = tokenizer.cls_token, tokenizer.sep_token
-            pad_token_id = tokenizer.convert_tokens_to_ids([tokenizer.pad_token])[0]
-            n_classes = get_n_classes(args.task_name)
-            logit_names = ["logit_{}".format(c) for c in range(n_classes)]
-            logger.info("Numericalising the transfer set using the student's tokenizer")
-            for example in tqdm(transfer_dataset_raw.examples):
-                # here, the sentence is already tokenized into words, which is OK (when using wordpieces, not words)
-                # ONLY IF BertTokenizer has do_basic_tokenize set to True -- but that's the (sensible) default.
-                sentence = " ".join(example.sentence)
-                example_numericalised = numericalise_sentence(args, sentence, tokenizer, 
-                                                              cls_token=cls_token, sep_token=sep_token, 
-                                                              pad_token_id=pad_token_id)
-                example_logits = [float(getattr(example, logit_name)) for logit_name in logit_names]
-                if args.student_type == "BERT":
-                    mask = (np.array(example_numericalised) != pad_token_id).astype(int)
-                    transfer_dataset_numerical["attention_mask"].append(torch.LongTensor(mask))
-                transfer_dataset_numerical["sentence"].append(torch.LongTensor(example_numericalised))
-                transfer_dataset_numerical["logits"].append(torch.FloatTensor(example_logits))
-            torch.save(transfer_dataset_numerical, transfer_dataset_numerical_file)
-        else:
-            logger.info("Loading the numerical transfer dataset from binary file: {}".format(transfer_dataset_numerical_file))
-            transfer_dataset_numerical = torch.load(transfer_dataset_numerical_file, map_location=args.device)
-        
-        # padding according to longest sentence when using LSTM
-        if not args.max_seq_length > 0:
-            lens = [len(sent) for sent in transfer_dataset_numerical["sentence"]]
-            transfer_dataset_numerical["sentence_length"] = torch.LongTensor(lens)
-            pad_token_id = tokenizer.convert_tokens_to_ids([tokenizer.pad_token])[0]
-            transfer_dataset_numerical = pad_sentences_to_longest(args, transfer_dataset_numerical, max(lens), pad_token_id)
-        else:
-            transfer_dataset_numerical["sentence_length"] = torch.LongTensor([0 for i in range(len(transfer_dataset_numerical["sentence"]))])
-
-        if args.student_type == "BERT":
-            transfer_dataset_numerical["attention_mask"] = torch.stack(transfer_dataset_numerical["attention_mask"])
-        transfer_dataset_numerical["sentence"] = torch.stack(transfer_dataset_numerical["sentence"])
-        transfer_dataset_numerical["logits"] = torch.stack(transfer_dataset_numerical["logits"])
-        if args.student_type == "BERT":
-            transfer_dataset = TensorDataset(transfer_dataset_numerical["sentence"], transfer_dataset_numerical["logits"], 
-                                             transfer_dataset_numerical["sentence_length"], transfer_dataset_numerical["attention_mask"])
-        else:
-            transfer_dataset = TensorDataset(transfer_dataset_numerical["sentence"], transfer_dataset_numerical["logits"], 
-                                             transfer_dataset_numerical["sentence_length"])
-        transfer_dataset_sampler = RandomSampler(transfer_dataset)
-        transfer_dataset = DataLoader(transfer_dataset, sampler=transfer_dataset_sampler, batch_size=args.batch_size)
-
-        return transfer_dataset
-
-    def pad_sentences_to_longest(args, dataset, target_len, pad_token_id):
-        for i in range(len(dataset["sentence"])):
-            sent_len = len(dataset["sentence"][i])
-            padding = torch.LongTensor([pad_token_id]*(target_len - sent_len))
-            dataset["sentence"][i] = torch.cat((dataset["sentence"][i].to(args.device), padding.to(args.device))).to(args.device)
-        return dataset
-    
-    def create_numerical_dev_set(args, dev_dataset_numerical_file, tokenizer):
-        if not os.path.isfile(dev_dataset_numerical_file):
-            fields = get_original_dev_dataset_fields(args)
-            dev_dataset_raw_file = os.path.join(args.data_dir, "dev.tsv")
-            dev_dataset_raw = TabularDataset(dev_dataset_raw_file, format="tsv", fields=fields, skip_header=has_header(args.task_name))
-            cls_token, sep_token, pad_token = tokenizer.cls_token, tokenizer.sep_token, tokenizer.pad_token
-            pad_token_id = tokenizer.convert_tokens_to_ids([pad_token])[0]
-            dev_dataset_numerical = {"sentence": [], "label": []}
-            if args.student_type == "BERT": dev_dataset_numerical["attention_mask"] = []
-            for example in tqdm(dev_dataset_raw.examples):
-                # here, the sentence is already tokenized into words, which is OK (when using wordpieces, not words)
-                # ONLY IF BertTokenizer has do_basic_tokenize set to True -- but that's the (sensible) default.
-                example_numericalised = numericalise_sentence(args, example.sentence, tokenizer, 
-                                                              cls_token=cls_token, sep_token=sep_token, 
-                                                              pad_token_id=pad_token_id)
-                if args.student_type == "BERT":
-                    mask = (np.array(example_numericalised) != pad_token_id).astype(int)
-                    dev_dataset_numerical["attention_mask"].append(torch.LongTensor(mask))
-                dev_dataset_numerical["sentence"].append(torch.LongTensor(example_numericalised))
-                dev_dataset_numerical["label"].append(torch.LongTensor([int(example.label)]))
-            torch.save(dev_dataset_numerical, dev_dataset_numerical_file)
-        else:
-            dev_dataset_numerical = torch.load(dev_dataset_numerical_file, map_location=args.device)
-        
-        # padding according to longest sentence when using LSTM
-        if args.student_type == "LSTM":
-            lens = [len(sent) for sent in dev_dataset_numerical["sentence"]]
-            dev_dataset_numerical["sentence_length"] = torch.LongTensor(lens)
-            pad_token_id = tokenizer.convert_tokens_to_ids([tokenizer.pad_token_id])[0]
-            dev_dataset_numerical = pad_sentences_to_longest(args, dev_dataset_numerical, max(lens), pad_token_id)
-        else:
-            dev_dataset_numerical["sentence_length"] = torch.LongTensor([0 for i in range(len(dev_dataset_numerical["sentence"]))])
-            
-        if args.student_type == "BERT": dev_dataset_numerical["attention_mask"] = torch.stack(dev_dataset_numerical["attention_mask"])
-        dev_dataset_numerical["sentence"] = torch.stack(dev_dataset_numerical["sentence"])
-        dev_dataset_numerical["label"] = torch.stack(dev_dataset_numerical["label"])
-        if args.student_type == "BERT":
-            dev_dataset = TensorDataset(dev_dataset_numerical["sentence"], dev_dataset_numerical["label"], 
-                                        dev_dataset_numerical["sentence_length"], dev_dataset_numerical["attention_mask"])
-        else:
-            dev_dataset = TensorDataset(dev_dataset_numerical["sentence"], dev_dataset_numerical["label"], 
-                                        dev_dataset_numerical["sentence_length"])
-        dev_dataset_sampler = SequentialSampler(dev_dataset)
-        dev_dataset = DataLoader(dev_dataset, sampler=dev_dataset_sampler, batch_size=args.per_gpu_eval_batch_size)
-        
-        return dev_dataset
-
-    def evaluate_model(params: SimpleNamespace):
-        # params contains:
-        # - dataset
-        # - model
-        # - task_name
-        # - device
-        # - student type
-        params.model.eval()
-        preds, targets = None, None
-        for batch in params.dataset:
-            batch = tuple(t.to(params.device) for t in batch)
-            with torch.no_grad():
-                # dev dataset contains: [sentence, label, sentence_length, attention_mask]
-                if params.student_type == "BERT":
-                    logits = params.model(batch[0], attention_mask=batch[3])[0]
-                # dev dataset contains: [sentence, label, sentence_length]
-                else: # feed LSTM also with sentence lengths
-                    logits = params.model((batch[0], batch[2]))
-            labels_pred = logits.max(1)[1]
-            if preds is None:
-                preds = labels_pred.detach().cpu().numpy()
-                targets = batch[1].detach().cpu().numpy()
-            else:
-                preds = np.append(preds, labels_pred.detach().cpu().numpy(), axis=0)
-                targets = np.append(targets, batch[1].detach().cpu().numpy(), axis=0)
-        result = compute_metrics(params.task_name, preds, targets)
-        return result
-
-    def create_word_level_tokenizer(args, vocab_file, processed_word_vectors_file, transfer_dataset_raw, transfer_dataset_raw_file):
-        if not os.path.isfile(vocab_file) or not os.path.isfile(processed_word_vectors_file):
-            if transfer_dataset_raw is None:
-                logger.info("Creating the raw (TSV) transfer set as it doesn't exist but is needed to construct student's word-level tokenizer")
-                transfer_dataset_raw = create_raw_transfer_set(args, transfer_dataset_raw_file)
-            logger.info("Creating vocab file from the transfer set")
-            vectors = Vectors(name=args.word_vectors_file, cache=args.word_vectors_dir, unk_init=uniform_unk_init())
-            text_field = transfer_dataset_raw.fields["sentence"]
-            text_field.build_vocab(transfer_dataset_raw, vectors=vectors, min_freq=1)
-            with open(vocab_file, "w", encoding="utf-8") as writer:
-                for word in text_field.vocab.itos:
-                    writer.write(word + u'\n')
-            torch.save(text_field.vocab.vectors, processed_word_vectors_file)
-
-        # create tokenizer using that vocab file name and config from teacher directory
-        if args.student_type == "BERT":
-            special_tokens_map = {"unk_token": "<unk>", "pad_token": "<pad>", "cls_token": "<cls>", "sep_token": "<sep>"}
-        else:
-            special_tokens_map = {"unk_token": "<unk>", "pad_token": "<pad>"}
-
-        tokenizer = WordTokenizer(vocab_file=vocab_file, do_lower_case=args.do_lower_case, 
-                                  max_len=(args.max_seq_length if args.student_type == "BERT" else None))
-        tokenizer.add_special_tokens(special_tokens_map)
-
-        special_tok_ids = {}
-        for tok_name, tok_symbol in special_tokens_map.items():
-            idx = tokenizer.encode(tok_symbol)[0]
-            special_tok_ids[tok_name] = idx
-        logger.info("Special tokens: {}".format(special_tok_ids))
-        args.special_tok_ids = special_tok_ids
-        return tokenizer
-
-    def softmax(x):
-        return np.exp(np.array(x))/sum(np.exp(np.array(x)))
 
     if args.score_with_student or args.score_with_teacher:
         assert os.path.isdir(args.trained_model_dir)

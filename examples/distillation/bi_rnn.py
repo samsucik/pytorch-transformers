@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from distillation.base import init_embedding, fetch_embedding
+from examples.distillation.base import init_embedding, fetch_embedding
 
 
 class BiRNNModel(nn.Module):

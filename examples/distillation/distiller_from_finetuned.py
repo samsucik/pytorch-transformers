@@ -36,7 +36,7 @@ from torch.utils.data import DataLoader
 from pytorch_transformers import WarmupLinearSchedule, WarmupConstantSchedule
 from examples.distillation.utils import logger
 from examples.run_glue import set_seed, evaluate
-from utils_glue import compute_metrics
+from examples.utils_glue import compute_metrics
 
 from examples.distillation.bi_rnn import BiRNNModel
 
