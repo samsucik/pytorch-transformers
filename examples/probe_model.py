@@ -31,14 +31,22 @@ def numericalise_batch(args, samples, tokenizer, cls_token, sep_token, pad_token
 def embed(args, batch):
     with torch.no_grad():
         if args["model_type"] == "BERT":
-            # outputs = (logits, (hidden_states)); len(hidden_states) = L+1; 0th element is top layer
+            # outputs = (logits, (hidden_states)); len(hidden_states) = L+1; 0th element is embedding layer
             # each element of hidden states is (B, MSL, H)
-            logits, hidden_states = args["model"](input_ids=batch["sentence"].to(args["device"]), attention_mask=batch["attention_mask"].to(args["device"]))
+            logits, hidden_states = args["model"](input_ids=batch["sentence"].to(args["device"]), 
+                                                  attention_mask=batch["attention_mask"].to(args["device"]))
             L = len(hidden_states)
-            if args["layer_to_probe"] >= len(hidden_states) or args["layer_to_probe"] < 0:
-                return torch.flatten(hidden_states[0], start_dim=1)
+            if args["layer_to_probe"] >= len(hidden_states) - 1 or args["layer_to_probe"] < 0:
+                layer = hidden_states[-1] # take last layer
             else:
-                return torch.flatten(hidden_states[args["layer_to_probe"]], start_dim=1)
+                layer = hidden_states[args["layer_to_probe"]+1] # layers are numbered from 1
+            
+            if args["embed_strategy"] == "avg":
+                return torch.mean(layer, dim=1) # average over the sequence length dimension
+            elif args["embed_strategy"] == "max":
+                return torch.max(layer, dim=1) # average over the sequence length dimension
+            elif args["embed_strategy"] == "single":    
+                return layer[:, 0, :] # take hidden state at 0th position (the [CLS] token)
         else:
             raise ValueError("NOT IMPLEMENTED")
 
@@ -99,26 +107,34 @@ def main():
                         help="Whether the model to probe is a student model or a teacher model.")
     parser.add_argument("--glue_data_dir", default="/home/sam/edi/minfp2/data/glue_data/CoLA", type=str, required=False,
                         help="Directory where the GLUE dataset is stored.")
+    parser.add_argument("--layer_to_probe", default=-1, type=int, required=False,
+                        help="Layer to probe; -1 equals to last layer. Numbering starts from 0.")
+    parser.add_argument("--embed_strategy", default="single", type=str, required=False,
+                        help="Strategy to use when extracting embeddings from a layer. Options: "
+                        "'single' -- take the first (BERT) or last (LSTM) hidden state, "
+                        "'avg' -- average over the (non-padding) hidden states, "
+                        "'max' -- take maximum along each hidden dimension across all non-padding hidden states.")
     args = parser.parse_args()
 
     args.n_gpu = 1 if torch.cuda.is_available() else 0
     args.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     args.use_word_vectors = args.is_student and args.model_type == "LSTM" # TODO: make sure this is correct for BERT students!
     args.student_type = args.model_type
-    args.layer_to_probe = -1
     args.cached_embeddings_file = os.path.join(args.glue_data_dir, 
-        "probing_{}_{}".format("student" if args.is_student else "teacher", args.model_type))
+        "probing_{}_{}_L{}_{}".format("student" if args.is_student else "teacher", args.model_type, args.layer_to_probe, args.embed_strategy))
     args.dev_mode = not torch.cuda.is_available()
+    
+    print(args)
    
     params = {'task_path': os.path.join(args.senteval_path, "data"), 
               'seed': 42,
               'usepytorch': True, # args.n_gpu > 0, 
               'kfold': 10,
-              'batch_size': 400,
+              'batch_size': 400 if not args.dev_mode else 15,
               **args.__dict__}
     params['classifier'] = {'nhid': 100,  # in paper they chose from [50, 100, 200]
                             'optim': 'adam', 
-                            'batch_size': 64 if not args.dev_mode else 4,
+                            'batch_size': 64 if not args.dev_mode else 8,
                             'tenacity': 5, 
                             'epoch_size': 4,
                             'dropout': 0.1, # in paper they chose from [0.0, 0.1, 0.2],
