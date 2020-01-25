@@ -33,7 +33,7 @@ def embed(args, batch):
         if args["model_type"] == "BERT":
             # outputs = (logits, (hidden_states)); len(hidden_states) = L+1; 0th element is embedding layer
             # each element of hidden states is (B, MSL, H)
-            logits, hidden_states = args["model"](input_ids=batch["sentence"].to(args["device"]), 
+            _, hidden_states = args["model"](input_ids=batch["sentence"].to(args["device"]), 
                                                   attention_mask=batch["attention_mask"].to(args["device"]))
             L = len(hidden_states)
             if args["layer_to_probe"] >= len(hidden_states) - 1 or args["layer_to_probe"] < 0:
@@ -44,7 +44,7 @@ def embed(args, batch):
             if args["embed_strategy"] == "avg":
                 return torch.mean(layer, dim=1) # average over the sequence length dimension
             elif args["embed_strategy"] == "max":
-                return torch.max(layer, dim=1) # average over the sequence length dimension
+                return torch.max(layer, dim=1)[0] # maximum over the sequence length dimension
             elif args["embed_strategy"] == "single":    
                 return layer[:, 0, :] # take hidden state at 0th position (the [CLS] token)
         else:
@@ -130,7 +130,7 @@ def main():
               'seed': 42,
               'usepytorch': True, # args.n_gpu > 0, 
               'kfold': 10,
-              'batch_size': 400 if not args.dev_mode else 15,
+              'batch_size': 300 if not args.dev_mode else 15,
               **args.__dict__}
     params['classifier'] = {'nhid': 100,  # in paper they chose from [50, 100, 200]
                             'optim': 'adam', 
@@ -142,7 +142,7 @@ def main():
                             }
     transfer_tasks = ['Length', 'WordContent', 'Depth', 'TopConstituents','BigramShift', 'Tense',
     'SubjNumber', 'ObjNumber', 'OddManOut', 'CoordinationInversion']
-    transfer_tasks = ['Length']
+    # transfer_tasks = ['BigramShift', 'Tense', 'SubjNumber', 'ObjNumber', 'OddManOut', 'CoordinationInversion']
     
     """
     params = {'task_path': os.path.join(args.senteval_path, "data"), 'optim': 'rmsprop', 
