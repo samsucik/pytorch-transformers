@@ -164,7 +164,7 @@ def main():
                 se = senteval.engine.SE(params, batcher, prepare)
                 results = se.eval([task_name], dev_mode=args.dev_mode)
     
-                with open(os.path.join(args.out_dir, "results.csv"), "w+") as f:
+                with open(os.path.join(args.out_dir, "results.csv"), "a") as f:
                     f.write("task,devacc,acc,ndev,ntest,nhid,dropout\n")
                     for task, task_results in results.items():
                         line = "{},{},{},{},{},{},{}".format(task, task_results["devacc"], task_results["acc"], 
