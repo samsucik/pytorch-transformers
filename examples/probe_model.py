@@ -40,11 +40,16 @@ def embed(args, batch):
                 layer = hidden_states[-1] # take last layer
             else:
                 layer = hidden_states[args["layer_to_probe"]+1] # layers are numbered from 1
-            
+            layer.cpu()
+
             if args["embed_strategy"] == "avg":
-                return torch.mean(layer, dim=1) # average over the sequence length dimension
+                # average over the sequence length dimension
+                seq_lens = torch.sum(batch["attention_mask"], dim=1)
+                return [torch.mean(layer[i, :seq_len, :], dim=0).numpy() for i, seq_len in enumerate(seq_lens)]
             elif args["embed_strategy"] == "max":
-                return torch.max(layer, dim=1)[0] # maximum over the sequence length dimension
+                # take maximum over the sequence length dimension
+                seq_lens = torch.sum(batch["attention_mask"], dim=1)
+                return [torch.max(layer[i, :seq_len, :], dim=0)[0].numpy() for i, seq_len in enumerate(seq_lens)]
             elif args["embed_strategy"] == "single":    
                 return layer[:, 0, :] # take hidden state at 0th position (the [CLS] token)
         else:
@@ -85,7 +90,7 @@ def batcher(args, batch):
 
     batch_numericalised = numericalise_batch(args, batch, args["tokenizer"], args["cls_token"], args["sep_token"], args["pad_token_id"])
     torch.cuda.empty_cache()
-    batch_embedded = embed(args, batch_numericalised).to("cpu")
+    batch_embedded = embed(args, batch_numericalised)
 
     return batch_embedded
 
@@ -128,7 +133,7 @@ def main():
    
     params = {'task_path': os.path.join(args.senteval_path, "data"), 
               'seed': 42,
-              'usepytorch': True, # args.n_gpu > 0, 
+              'usepytorch': True,
               'kfold': 10,
               'batch_size': 300 if not args.dev_mode else 15,
               **args.__dict__}
