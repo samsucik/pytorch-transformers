@@ -156,6 +156,8 @@ def main():
     """
     nhids = [50, 100, 200]
     dropouts = [0.0, 0.1, 0.2]
+    with open(os.path.join(args.out_dir, "results.csv"), "a") as f:
+        f.write("task,devacc,acc,ndev,ntest,nhid,dropout\n")
     for task_name in transfer_tasks:
         for nhid in nhids:
             for dropout in dropouts:
@@ -165,7 +167,6 @@ def main():
                 results = se.eval([task_name], dev_mode=args.dev_mode)
     
                 with open(os.path.join(args.out_dir, "results.csv"), "a") as f:
-                    f.write("task,devacc,acc,ndev,ntest,nhid,dropout\n")
                     for task, task_results in results.items():
                         line = "{},{},{},{},{},{},{}".format(task, task_results["devacc"], task_results["acc"], 
                                                              task_results["ndev"], task_results["ntest"], nhid, dropout)
