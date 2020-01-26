@@ -109,7 +109,13 @@ class Distiller:
                     if any(nd in n for nd in no_decay) and p.requires_grad], 
                  'weight_decay': 0.0}
             ]
-            self.parameters_to_clip = self.student.parameters()
+            # self.parameters_to_clip = self.student.parameters()
+            params_to_clip = []
+            for m in self.student.modules():
+                if isinstance(m, nn.Embedding):
+                    continue
+                params_to_clip.extend(p for p in m.parameters() if p.dim() >= 2)
+            self.parameters_to_clip = params_to_clip
         else: # no weight decay for LSTM student
             student_params = [p for p in self.student.parameters() if p.requires_grad]
             self.parameters_to_clip = self.student.non_embedding_params()
