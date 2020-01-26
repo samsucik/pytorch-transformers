@@ -2,6 +2,7 @@ import senteval
 import glob
 import numpy as np
 import argparse, os
+import logging
 from types import SimpleNamespace
 import torch
 
@@ -60,7 +61,7 @@ def prepare(args, samples):
 
 def batcher(args, batch):
     if "tokenizer" not in args:
-        print("Creating a tokenizer...")
+        logging.info("Creating a tokenizer...")
         model_args = torch.load(os.path.join(args["model_dir"], "training_args.bin"), map_location=args["device"])
         args["max_seq_length"] = model_args.max_seq_length
         if args["use_word_vectors"]:
@@ -77,7 +78,7 @@ def batcher(args, batch):
         args["pad_token_id"] = tokenizer.convert_tokens_to_ids([pad_token])[0]
 
     if "model" not in args:
-        print("Loading the trained model...")
+        logging.info("Loading the trained model...")
         if args["is_student"]:
             file =  glob.glob(os.path.join(args["model_dir"], "pytorch_model_best*.pt"))
             model = torch.load(file[0], map_location=args["device"])
@@ -129,7 +130,7 @@ def main():
         "probing_{}_{}_L{}_{}".format("student" if args.is_student else "teacher", args.model_type, args.layer_to_probe, args.embed_strategy))
     args.dev_mode = not torch.cuda.is_available()
     
-    print(args)
+    logging.info(args)
    
     params = {'task_path': os.path.join(args.senteval_path, "data"), 
               'seed': 42,
@@ -153,16 +154,23 @@ def main():
     params = {'task_path': os.path.join(args.senteval_path, "data"), 'optim': 'rmsprop', 
               'batch_size': 128, 'tenacity': 3, 'epoch_size': 2}
     """
-
-    se = senteval.engine.SE(params, batcher, prepare)
-    results = se.eval(transfer_tasks, dev_mode=args.dev_mode)
+    nhids = [50, 100, 200]
+    dropouts = [0.0, 0.1, 0.2]
+    for task_name in transfer_tasks:
+        for nhid in nhids:
+            for dropout in dropouts:
+                params["classifier"]["nhid"] = nhid
+                params["classifier"]["dropout"] = dropout
+                se = senteval.engine.SE(params, batcher, prepare)
+                results = se.eval([task_name], dev_mode=args.dev_mode)
     
-    with open(os.path.join(args.out_dir, "results.csv"), "w") as f:
-        f.write("task,devacc,acc,ndev,ntest\n")
-        for task, task_results in results.items():
-            line = "{},{},{},{},{}".format(task, task_results["devacc"], task_results["acc"], task_results["ndev"], task_results["ntest"])
-            f.write("{}\n".format(line))
-            print(line)
+                with open(os.path.join(args.out_dir, "results.csv"), "w+") as f:
+                    f.write("task,devacc,acc,ndev,ntest,nhid,dropout\n")
+                    for task, task_results in results.items():
+                        line = "{},{},{},{},{},{},{}".format(task, task_results["devacc"], task_results["acc"], 
+                                                             task_results["ndev"], task_results["ntest"], nhid, dropout)
+                        f.write("{}\n".format(line))
+                        logging.info(line)
 
 if __name__ == '__main__':
     main()
