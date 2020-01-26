@@ -40,7 +40,7 @@ def embed(args, batch):
                 layer = hidden_states[-1] # take last layer
             else:
                 layer = hidden_states[args["layer_to_probe"]+1] # layers are numbered from 1
-            layer.cpu()
+            layer = layer.cpu()
 
             if args["embed_strategy"] == "avg":
                 # average over the sequence length dimension
