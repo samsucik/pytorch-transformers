@@ -10,18 +10,23 @@ from examples.distillation.utils import parse_str2bool
 from examples.distil_from_finetuned import create_word_level_tokenizer, numericalise_sentence
 from pytorch_transformers.tokenization_bert import BertTokenizer
 from pytorch_transformers.modeling_bert import BertForSequenceClassification
+from pytorch_transformers.configuration_bert import BertConfig
 
 def dict_to_namespace(d):
     return SimpleNamespace(**d)
 
+def num_labels(task):
+    if task in ["CoLA", "SST-2"]: return 2
+    else: return 57
+
 def numericalise_batch(args, samples, tokenizer, cls_token, sep_token, pad_token_id):
     numericalised_samples = {"sentence": []}
-    if args["model_type"] == "BERT": numericalised_samples["attention_mask"] = []
+    if args["model_type"] in ["BERT", "pretrained"]: numericalised_samples["attention_mask"] = []
     for example in samples:
         example_numericalised = numericalise_sentence(dict_to_namespace(args), " ".join(example), tokenizer,
                                                       cls_token=cls_token, sep_token=sep_token, 
                                                       pad_token_id=pad_token_id)
-        if args["model_type"] == "BERT":
+        if args["model_type"] in ["BERT", "pretrained"]:
             mask = (np.array(example_numericalised) != pad_token_id).astype(int)
             numericalised_samples["attention_mask"].append(torch.LongTensor(mask))
         numericalised_samples["sentence"].append(torch.LongTensor(example_numericalised))
@@ -31,7 +36,7 @@ def numericalise_batch(args, samples, tokenizer, cls_token, sep_token, pad_token
 
 def embed(args, batch):
     with torch.no_grad():
-        if args["model_type"] == "BERT":
+        if args["model_type"] in ["BERT", "pretrained"]:
             # outputs = (logits, (hidden_states)); len(hidden_states) = L+1; 0th element is embedding layer
             # each element of hidden states is (B, MSL, H)
             _, hidden_states = args["model"](input_ids=batch["sentence"].to(args["device"]), 
@@ -60,18 +65,25 @@ def prepare(args, samples):
     return
 
 def batcher(args, batch):
+    if args["pretrained"] is not None and "pretrained-config" not in args:
+        args["pretrained-config"] = BertConfig.from_pretrained(args["pretrained"], num_labels=num_labels(args["glue_task"]))
+        args["max_seq_length"] = args["pretrained-config"].max_position_embeddings
+    
     if "tokenizer" not in args:
         logging.info("Creating a tokenizer...")
-        model_args = torch.load(os.path.join(args["model_dir"], "training_args.bin"), map_location=args["device"])
-        args["max_seq_length"] = model_args.max_seq_length
-        if args["use_word_vectors"]:
-            vocab_file = os.path.join(args["glue_data_dir"], "transfer_set_vocab.txt")
-            args["processed_word_vectors_file"] = os.path.join(args["glue_data_dir"], "word_vectors")
-            args["do_lower_case"] = model_args.do_lower_case
-            tokenizer = create_word_level_tokenizer(dict_to_namespace(args), vocab_file, args["processed_word_vectors_file"], 
-                                                    transfer_dataset_raw=None, transfer_dataset_raw_file=None)
+        if args["pretrained"] is not None:
+            tokenizer = BertTokenizer.from_pretrained(args["pretrained"], do_lower_case=True)
         else:
-            tokenizer = BertTokenizer.from_pretrained(args["model_dir"], do_lower_case=model_args.do_lower_case)
+            model_args = torch.load(os.path.join(args["model_dir"], "training_args.bin"), map_location=args["device"])
+            args["max_seq_length"] = model_args.max_seq_length
+            if args["use_word_vectors"]:
+                vocab_file = os.path.join(args["glue_data_dir"], "transfer_set_vocab.txt")
+                args["processed_word_vectors_file"] = os.path.join(args["glue_data_dir"], "word_vectors")
+                args["do_lower_case"] = model_args.do_lower_case
+                tokenizer = create_word_level_tokenizer(dict_to_namespace(args), vocab_file, args["processed_word_vectors_file"], 
+                                                        transfer_dataset_raw=None, transfer_dataset_raw_file=None)
+            else:
+                tokenizer = BertTokenizer.from_pretrained(args["model_dir"], do_lower_case=model_args.do_lower_case)
         args["tokenizer"] = tokenizer
         
         args["cls_token"], args["sep_token"], pad_token = tokenizer.cls_token, tokenizer.sep_token, tokenizer.pad_token
@@ -79,7 +91,10 @@ def batcher(args, batch):
 
     if "model" not in args:
         logging.info("Loading the trained model...")
-        if args["is_student"]:
+        if args["pretrained"] is not None:
+            model = BertForSequenceClassification.from_pretrained(args["pretrained"], config=args["pretrained-config"])
+            model.bert.encoder.output_hidden_states = True
+        elif args["is_student"]:
             file =  glob.glob(os.path.join(args["model_dir"], "pytorch_model_best*.pt"))
             model = torch.load(file[0], map_location=args["device"])
         else:
@@ -106,7 +121,7 @@ def main():
     parser.add_argument("--glue_task", default="CoLA", type=str, required=False,
                         help="One of: CoLA, SST-2, Sara.")
     parser.add_argument("--model_type", default="BERT", type=str, required=False,
-                        help="One of: BERT, LSTM.")
+                        help="One of: BERT, LSTM, pretrained.")
     parser.add_argument("--model_dir", default="teacher-CoLA", type=str, required=False,
                         help="Directory where trained model is saved.")
     parser.add_argument("--is_student", type=parse_str2bool, default=False,
@@ -126,8 +141,10 @@ def main():
     args.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     args.use_word_vectors = args.is_student and args.model_type == "LSTM" # TODO: make sure this is correct for BERT students!
     args.student_type = args.model_type
+    args.pretrained = "bert-large-uncased" if args.model_type == "pretrained" else None
     args.cached_embeddings_file = os.path.join(args.glue_data_dir, 
-        "probing_{}_{}_L{}_{}".format("student" if args.is_student else "teacher", args.model_type, args.layer_to_probe, args.embed_strategy))
+        "probing_{}_{}_L{}_{}".format(args.pretrained if args.pretrained is not None else ("student" if args.is_student else "teacher"), 
+            args.model_type, args.layer_to_probe, args.embed_strategy))
     args.dev_mode = not torch.cuda.is_available()
     
     logging.info(args)
