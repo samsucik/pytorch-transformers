@@ -215,42 +215,11 @@ class Distiller:
                 break
 
             self.data_iterator.close()
-            # if self.student_type == "LSTM": self.dataset_train.init_epoch()
             self.data_iterator = tqdm(self.dataset_train, desc="Iteration")
             
             logger.info("--- Ending epoch {}/{}".format(self.epoch, self.n_epochs-1))
             self.end_epoch()
 
-        """
-        logger.info("FINAL SCORING OF PREV BEST CKPT")
-        args = self.params
-        torch.cuda.deterministic = True
-        model = BiRNNModel(args)
-        sdict = torch.load(self.prev_best_ckpt, map_location=args.device)
-        for k, v in sdict.items():
-            logger.info("{}: {}".format(k, torch.equal(v.cpu(), self.prev_best_dict[k])))
-        param_keys = model.load_state_dict(sdict, strict=True)
-        loaded_params = [p for p in model.state_dict() if p not in param_keys[0]]
-        num_loaded_params = sum([model.state_dict()[p].numel() for p in loaded_params])
-        num_all_params = sum([p.numel() for n, p in model.state_dict().items()])
-        model.to(args.device)
-        torch.cuda.empty_cache()
-        model.eval()
-        logits_all, preds, targets = [], [], []
-        for batch in self.dataset_eval:
-            with torch.no_grad():
-                logits = model((batch[0].to(args.device), batch[2].to(args.device)))
-            labels_pred = logits.max(1)[1]
-            logits_all.append(logits.detach().cpu().numpy())
-            preds.append(labels_pred.detach().cpu().numpy())
-            targets.append(batch[1].detach().cpu().numpy())
-        logits_all = np.concatenate(logits_all, axis=0)
-        preds = np.concatenate(preds, axis=0)
-        targets = np.concatenate(targets, axis=0).reshape((-1, ))
-        result = compute_metrics(args.task_name, preds, targets)
-        logger.info("Result of prev best ({}): {}".format(self.prev_best_ckpt, result))
-        """
-        
         logger.info("Save very last checkpoint as `pytorch_model.bin`.")
         self.save_checkpoint()
         self.tensorboard.close()
@@ -276,6 +245,11 @@ class Distiller:
         else:
             teacher_logits = batch[1]
             assert logits.size() == teacher_logits.size()
+
+            preds = torch.argmax(logits, dim=1)
+            labels = torch.argmax(teacher_logits, dim=1)
+            acc = (preds == labels).mean()
+            logger.info("Accuracy on train batch: {}".format(acc))
 
             loss_ce = self.alpha_ce * self.ce_loss_fct(F.log_softmax(logits/self.temperature, dim=-1),
                 F.softmax(teacher_logits/self.temperature, dim=-1)) * (self.temperature)**2
@@ -361,65 +335,11 @@ class Distiller:
 
         # delete all previous best checkpoints
         if kind == "best":
-            """
-            if self.prev_best_ckpt is not None:
-                args = self.params
-                torch.cuda.deterministic = True
-                model = BiRNNModel(args)
-                sdict = torch.load(self.prev_best_ckpt, map_location=args.device)
-                for k, v in sdict.items():
-                    logger.info("{}: {}".format(k, torch.equal(v.cpu(), self.prev_best_dict[k])))
-                param_keys = model.load_state_dict(sdict, strict=True)
-                loaded_params = [p for p in model.state_dict() if p not in param_keys[0]]
-                num_loaded_params = sum([model.state_dict()[p].numel() for p in loaded_params])
-                num_all_params = sum([p.numel() for n, p in model.state_dict().items()])
-                model.to(args.device)
-                torch.cuda.empty_cache()
-                model.eval()
-                logits_all, preds, targets = [], [], []
-                for batch in self.dataset_eval:
-                    with torch.no_grad():
-                        logits = model((batch[0].to(args.device), batch[2].to(args.device)))
-                    labels_pred = logits.max(1)[1]
-                    logits_all.append(logits.detach().cpu().numpy())
-                    preds.append(labels_pred.detach().cpu().numpy())
-                    targets.append(batch[1].detach().cpu().numpy())
-                logits_all = np.concatenate(logits_all, axis=0)
-                preds = np.concatenate(preds, axis=0)
-                targets = np.concatenate(targets, axis=0).reshape((-1, ))
-                result = compute_metrics(args.task_name, preds, targets)
-                logger.info("SCORING USING PREVIOUS BEST MODEL ({}): {}".format(self.prev_best_ckpt[-20:], result))
-                model = torch.load(self.prev_best_ckpt+".pt")
-                model.to(args.device)
-                torch.cuda.empty_cache()
-                model.eval()
-                logits_all, preds, targets = [], [], []
-                for batch in self.dataset_eval:
-                    with torch.no_grad():
-                        logits = model((batch[0].to(args.device), batch[2].to(args.device)))
-                    labels_pred = logits.max(1)[1]
-                    logits_all.append(logits.detach().cpu().numpy())
-                    preds.append(labels_pred.detach().cpu().numpy())
-                    targets.append(batch[1].detach().cpu().numpy())
-                logits_all = np.concatenate(logits_all, axis=0)
-                preds = np.concatenate(preds, axis=0)
-                targets = np.concatenate(targets, axis=0).reshape((-1, ))
-                result = compute_metrics(args.task_name, preds, targets)
-                logger.info("SCORING USING PREVIOUS BEST MODEL (saved as model) ({}): {}".format(self.prev_best_ckpt[-20:], result))
-            """
-            
             checkpoint_name = ("best_" + checkpoint_name) if checkpoint_name is not None else "best"
             previous_bests = [f for f in os.listdir(self.output_dir) if re.match(r'.*best.*\.bin', f)]
             logger.info("Deleting previous best checkpoint(s): {}".format(previous_bests))
             for f in previous_bests: os.remove(os.path.join(self.output_dir, f))
-            
-            """
-            logger.info("Scoring AGAIN (BEFORE SAVING THIS BEST CKPT)")
-            eval_params = SimpleNamespace(dataset=self.dataset_eval, model=self.student, student_type=self.student_type, \
-                                                  task_name=self.params.task_name, device=self.params.device)
-            results = self.evaluate_fn(eval_params)
-            logger.info("{}: {}".format(checkpoint_name, results))
-            """
+
         if checkpoint_name is not None:
             checkpoint_name = "pytorch_model_" + checkpoint_name + ".bin"
 
@@ -427,37 +347,10 @@ class Distiller:
         if checkpoint_name is not None:
             if self.student_type == "BERT": mdl_to_save.config.save_pretrained(self.output_dir)
             state_dict = mdl_to_save.state_dict()
-            # torch.save(state_dict, os.path.join(self.output_dir, checkpoint_name))
             torch.save(self.student, os.path.join(self.output_dir, checkpoint_name+".pt"))
-            
-            """
-            sd1 = {n: p.detach().clone().cpu() for n, p in state_dict.items()}
-            self.prev_best_ckpt = os.path.join(self.output_dir, checkpoint_name)
-            self.prev_best_dict = sd1
-            
-            if kind == "best":
-                logger.info("RELOADING...")
-                student = BiRNNModel(self.params).to(self.params.device)
-                # s_dict = torch.load("/home/sam/edi/minfp2/experiments/good-student-lstm/pytorch_model_best_e29.91_mcc:0.352.bin", map_location=self.params.device)
-                s_dict = torch.load(os.path.join(self.output_dir, checkpoint_name), map_location=self.params.device)
-                param_keys = student.load_state_dict(s_dict, strict=True)
-                loaded_params = [p for p in student.state_dict() if p not in param_keys[0]]
-                num_loaded_params = sum([student.state_dict()[p].numel() for p in loaded_params])
-                num_all_params = sum([p.numel() for n, p in student.state_dict().items()])
-                eval_params = SimpleNamespace(dataset=self.dataset_eval, model=student, student_type=self.student_type, \
-                                                      task_name=self.params.task_name, device=self.params.device)
-                results = self.evaluate_fn(eval_params)
-                logger.info("CURRENT BEST (FRESHLY SAVED) {}: {}".format(checkpoint_name, results))
-            """
         else:
             pass
-            """
-            if self.student_type == "BERT":
-                mdl_to_save.save_pretrained(self.output_dir)
-            else:
-                state_dict = mdl_to_save.state_dict()
-                torch.save(state_dict, os.path.join(self.output_dir, "pytorch_model.bin"))
-            """
+           
         # Good practice: save your training arguments together with the trained model
         torch.save(self.params, os.path.join(self.output_dir, 'training_args.bin'))
         
