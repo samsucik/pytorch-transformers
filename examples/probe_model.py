@@ -153,7 +153,7 @@ def main():
               'seed': 42,
               'usepytorch': True,
               'kfold': 10,
-              'batch_size': 300 if not args.dev_mode else 15,
+              'batch_size': 100 if not args.dev_mode else 15,
               **args.__dict__}
     params['classifier'] = {'nhid': 100,  # in paper they chose from [50, 100, 200]
                             'optim': 'adam', 

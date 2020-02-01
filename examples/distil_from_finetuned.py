@@ -137,10 +137,10 @@ def get_original_dev_dataset_fields(args):
         return [("guid", None), ("label", label_field), ("acceptability", None), ("sentence", text_field)]
     elif args.task_name == "sst-2":
         # hide new secretions from the parental units     0
-        return [("sentence", text_field), ("label", None)]
+        return [("sentence", text_field), ("label", label_field)]
     elif args.task_name == "sara":
         # 0 Yep that's fine
-        return [("label", None), ("sentence", text_field)]
+        return [("label", label_field), ("sentence", text_field)]
     else:
         raise ValueError("Unrecognised task name: {}".format(args.task_name))
 
@@ -747,6 +747,7 @@ def main():
             token_embedding_dimensionality=args.token_embedding_dimensionality,
             token_type_embedding_dimensionality=args.token_type_embedding_dimensionality,
             embedding_mode=args.mode,
+            num_labels=get_n_classes(args.task_name)
         )    
     # Either load full learned student model
     if args.from_pretrained != "none":
