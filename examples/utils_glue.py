@@ -23,6 +23,7 @@ import os
 import sys
 from io import open
 
+import numpy as np
 from scipy.stats import pearsonr, spearmanr
 from sklearn.metrics import matthews_corrcoef, f1_score, confusion_matrix
 
@@ -572,7 +573,7 @@ def _truncate_seq_pair(tokens_a, tokens_b, max_length):
 
 
 def simple_accuracy(preds, labels):
-    return (preds == labels).mean()
+    return (np.reshape(preds, (-1,)) == np.reshape(labels, (-1,))).mean()
 
 
 def acc_and_f1(preds, labels):

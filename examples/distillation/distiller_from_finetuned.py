@@ -246,10 +246,10 @@ class Distiller:
             teacher_logits = batch[1]
             assert logits.size() == teacher_logits.size()
 
-            preds = torch.argmax(logits, dim=1)
-            labels = torch.argmax(teacher_logits, dim=1)
-            acc = (preds == labels).mean()
-            logger.info("Accuracy on train batch: {}".format(acc))
+            #preds = torch.argmax(logits, dim=1)
+            #labels = torch.argmax(teacher_logits, dim=1)
+            #acc = (preds == labels).long().float().mean()
+            #logger.info("Accuracy on train batch: {}".format(acc))
 
             loss_ce = self.alpha_ce * self.ce_loss_fct(F.log_softmax(logits/self.temperature, dim=-1),
                 F.softmax(teacher_logits/self.temperature, dim=-1)) * (self.temperature)**2

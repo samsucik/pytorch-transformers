@@ -370,7 +370,7 @@ def evaluate_model(params: SimpleNamespace):
             # dev dataset contains: [sentence, label, sentence_length]
             else: # feed LSTM also with sentence lengths
                 logits = params.model((batch[0], batch[2]))
-        labels_pred = logits.max(1)[1]
+        labels_pred = torch.argmax(logits, dim=1)
         if preds is None:
             preds = labels_pred.detach().cpu().numpy()
             targets = batch[1].detach().cpu().numpy()
