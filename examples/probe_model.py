@@ -81,7 +81,7 @@ def batcher(args, batch):
     if args["pretrained"] is not None and "pretrained-config" not in args:
         args["pretrained-config"] = BertConfig.from_pretrained(args["pretrained"], num_labels=num_labels(args["glue_task"]))
         args["max_seq_length"] = args["pretrained-config"].max_position_embeddings
-    # """
+
     if "tokenizer" not in args:
         logging.info("Creating a tokenizer...")
         if args["pretrained"] is not None:
@@ -113,7 +113,7 @@ def batcher(args, batch):
         
         args["cls_token"], args["sep_token"], pad_token = tokenizer.cls_token, tokenizer.sep_token, tokenizer.pad_token
         args["pad_token_id"] = tokenizer.convert_tokens_to_ids([pad_token])[0]
-    # """
+
     if "model" not in args:
         logging.info("Loading the trained model...")
         if args["pretrained"] is not None:
@@ -122,6 +122,7 @@ def batcher(args, batch):
         elif args["is_student"]:
             file =  glob.glob(os.path.join(args["model_dir"], "pytorch_model_best*.pt"))
             model = torch.load(file[0], map_location=args["device"])
+            if args["student_type"] == "BERT": model.bert.encoder.output_hidden_states = True
         elif args["model_type"] in ["embedding_word", "embedding_wordpiece"]:
             if args["model_type"] == "embedding_wordpiece":
                 args["embedding_dimensionality"] = 1024
@@ -134,7 +135,7 @@ def batcher(args, batch):
                 args["processed_word_vectors_file"] = os.path.join(args["glue_data_dir"], "word_vectors")
                 args["padding_idx"] = 1
             model = EmbeddingModel(args)
-        else:
+        else: # teacher model
             model = BertForSequenceClassification.from_pretrained(args["model_dir"])
             model.bert.encoder.output_hidden_states = True
         model.to(args["device"])
@@ -153,8 +154,6 @@ def main():
                         help="Directory where the results will be stored.")
     parser.add_argument("--senteval_path", default="/home/sam/edi/minfp2/SentEval", type=str, required=False,
                         help="SentEval path.")
-    # parser.add_argument("--n_gpu", default="0", type=int, required=False,
-    #                     help="# of GPUs available.")
     parser.add_argument("--glue_task", default="CoLA", type=str, required=False,
                         help="One of: CoLA, SST-2, Sara.")
     parser.add_argument("--model_type", default="BERT", type=str, required=False,
@@ -163,6 +162,8 @@ def main():
                         help="Directory where trained model is saved.")
     parser.add_argument("--is_student", type=parse_str2bool, default=False,
                         help="Whether the model to probe is a student model or a teacher model.")
+    parser.add_argument("--use_word_vectors", type=parse_str2bool, default=False,
+                        help="Whether to use word vectors or not (only with student/embedding models).")
     parser.add_argument("--glue_data_dir", default="/home/sam/edi/minfp2/data/glue_data/CoLA", type=str, required=False,
                         help="Directory where the GLUE dataset is stored.")
     parser.add_argument("--layer_to_probe", default=-1, type=int, required=False,
@@ -176,7 +177,11 @@ def main():
 
     args.n_gpu = 1 if torch.cuda.is_available() else 0
     args.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    args.use_word_vectors = args.is_student and args.model_type == "LSTM" # TODO: make sure this is correct for BERT students!
+    if args.model_type == "embedding_word":
+        args.use_word_vectors = True
+    elif args.model_type in ["embedding_wordpiece", "pretrained"]:
+        args.use_word_vectors = False
+
     args.student_type = args.model_type
     args.pretrained = "bert-large-uncased" if args.model_type == "pretrained" else None
     args.cached_embeddings_file = os.path.join(args.glue_data_dir, 
@@ -202,12 +207,6 @@ def main():
                             }
     transfer_tasks = ['Length', 'WordContent', 'Depth', 'TopConstituents','BigramShift', 'Tense',
     'SubjNumber', 'ObjNumber', 'OddManOut', 'CoordinationInversion']
-    # transfer_tasks = ['BigramShift', 'Tense', 'SubjNumber', 'ObjNumber', 'OddManOut', 'CoordinationInversion']
-    
-    """
-    params = {'task_path': os.path.join(args.senteval_path, "data"), 'optim': 'rmsprop', 
-              'batch_size': 128, 'tenacity': 3, 'epoch_size': 2}
-    """
     nhids = [50, 100, 200]
     dropouts = [0.0, 0.1, 0.2]
     with open(os.path.join(args.out_dir, "results.csv"), "a") as f:
