@@ -22,17 +22,18 @@ def num_labels(task):
 
 def numericalise_batch(args, samples, tokenizer, cls_token, sep_token, pad_token_id):
     numericalised_samples = {"sentence": []}
-    if args["model_type"] in ["BERT", "pretrained", "embedding_wordpiece", "embedding_word"]: numericalised_samples["attention_mask"] = []
+    if args["model_type"] in ["BERT", "pretrained", "embedding_wordpiece", "embedding_word", "LSTM"]: numericalised_samples["attention_mask"] = []
     for example in samples:
         example_numericalised = numericalise_sentence(dict_to_namespace(args), " ".join(example), tokenizer,
                                                       cls_token=cls_token, sep_token=sep_token, 
                                                       pad_token_id=pad_token_id)
-        if args["model_type"] in ["BERT", "pretrained", "embedding_wordpiece", "embedding_word"]:
+        if args["model_type"] in ["BERT", "pretrained", "embedding_wordpiece", "embedding_word", "LSTM"]:
             mask = (np.array(example_numericalised) != pad_token_id).astype(int)
             numericalised_samples["attention_mask"].append(torch.LongTensor(mask))
         numericalised_samples["sentence"].append(torch.LongTensor(example_numericalised))
-    for k, _ in numericalised_samples.items():
-        numericalised_samples[k] = torch.stack(numericalised_samples[k])
+    numericalised_samples["sentence"] = torch.nn.utils.rnn.pad_sequence(numericalised_samples["sentence"], batch_first=True, padding_value=args["pad_token_id"])
+    if "attention_mask" in numericalised_samples:
+        numericalised_samples["attention_mask"] = torch.nn.utils.rnn.pad_sequence(numericalised_samples["attention_mask"], batch_first=True, padding_value=0)
     return numericalised_samples
 
 def embed(args, batch):
@@ -71,8 +72,19 @@ def embed(args, batch):
                 return [torch.max(embeddings[i, :seq_len, :], dim=0)[0].numpy() for i, seq_len in enumerate(seq_lens)]
             elif args["embed_strategy"] == "single":    
                 return embeddings[:, 0, :] # take 0th embedding
-        else:
-            raise ValueError("NOT IMPLEMENTED")
+        else: # LSTM student
+            lengths = batch["attention_mask"].sum(axis=1)
+            embeddings = args["model"]((batch["sentence"].to(args["device"]), lengths.to(args["device"]))).cpu() # (B, MSL, DxH)
+            if args["embed_strategy"] == "avg":
+                # average over the sequence length dimension
+                seq_lens = torch.sum(batch["attention_mask"], dim=1)
+                return [torch.mean(embeddings[i, :seq_len, :], dim=0).numpy() for i, seq_len in enumerate(seq_lens)]
+            elif args["embed_strategy"] == "max":
+                # take maximum over the sequence length dimension
+                seq_lens = torch.sum(batch["attention_mask"], dim=1)
+                return [torch.max(embeddings[i, :seq_len, :], dim=0)[0].numpy() for i, seq_len in enumerate(seq_lens)]
+            elif args["embed_strategy"] == "single":    
+                return embeddings[:, 0, :] # take 0th embedding
 
 def prepare(args, samples):
     return
@@ -97,7 +109,7 @@ def batcher(args, batch):
                 tokenizer = create_word_level_tokenizer(dict_to_namespace(args), vocab_file, args["processed_word_vectors_file"], 
                                                         transfer_dataset_raw=None, transfer_dataset_raw_file=None)
             else:
-                tokenizer = BertTokenizer.from_pretrained(args["model_dir"], do_lower_case=args["do_lower_case"])
+                tokenizer = BertTokenizer.from_pretrained(args["model_dir"], do_lower_case=args["do_lower_case"], sep_token=None, cls_token=None)
         else: # tokenizer for student models
             model_args = torch.load(os.path.join(args["model_dir"], "training_args.bin"), map_location=args["device"])
             args["max_seq_length"] = model_args.max_seq_length
@@ -108,7 +120,10 @@ def batcher(args, batch):
                 tokenizer = create_word_level_tokenizer(dict_to_namespace(args), vocab_file, args["processed_word_vectors_file"], 
                                                         transfer_dataset_raw=None, transfer_dataset_raw_file=None)
             else:
-                tokenizer = BertTokenizer.from_pretrained(args["model_dir"], do_lower_case=model_args.do_lower_case)
+                if args["model_type"] =="BERT":
+                    tokenizer = BertTokenizer.from_pretrained(args["model_dir"], do_lower_case=model_args.do_lower_case)
+                else: # LSTM has no sep_token or cls_token
+                    tokenizer = BertTokenizer.from_pretrained(args["model_dir"], do_lower_case=model_args.do_lower_case, sep_token=None, cls_token=None)
         args["tokenizer"] = tokenizer
         
         args["cls_token"], args["sep_token"], pad_token = tokenizer.cls_token, tokenizer.sep_token, tokenizer.pad_token
@@ -122,7 +137,13 @@ def batcher(args, batch):
         elif args["is_student"]:
             file =  glob.glob(os.path.join(args["model_dir"], "pytorch_model_best*.pt"))
             model = torch.load(file[0], map_location=args["device"])
-            if args["student_type"] == "BERT": model.bert.encoder.output_hidden_states = True
+            if args["student_type"] == "BERT": 
+                model.bert.encoder.output_hidden_states = True
+            else: # LSTM student
+                model.output_hidden_states = True
+                model.padding_idx = args["pad_token_id"]
+                if args["layer_to_probe"] not in [-1, 0]:
+                    raise ValueError("You can only probe the last layer (specified as -1 or 0) when using LSTM model.")
         elif args["model_type"] in ["embedding_word", "embedding_wordpiece"]:
             if args["model_type"] == "embedding_wordpiece":
                 args["embedding_dimensionality"] = 1024
