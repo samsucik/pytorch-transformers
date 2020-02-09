@@ -43,7 +43,9 @@ def embed(args, batch):
             # each element of hidden states is (B, MSL, H)
             _, hidden_states = args["model"](input_ids=batch["sentence"].to(args["device"]), 
                                                   attention_mask=batch["attention_mask"].to(args["device"]))
-            if args["layer_to_probe"] >= len(hidden_states) - 1 or args["layer_to_probe"] < 0:
+            if args["layer_to_probe"] == 47:
+                layer = hidden_states[0] # take embedding layer
+            elif args["layer_to_probe"] >= len(hidden_states) - 1 or args["layer_to_probe"] < 0:
                 layer = hidden_states[-1] # take last layer
             else:
                 layer = hidden_states[args["layer_to_probe"]+1] # layers are numbered from 1
