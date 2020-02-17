@@ -744,8 +744,8 @@ def main():
             max_position_embeddings=args.max_position_embeddings,
             hidden_act=args.activation,
             initializer_range=args.initializer_range,
-            token_embedding_dimensionality=args.token_embedding_dimensionality,
-            token_type_embedding_dimensionality=args.token_type_embedding_dimensionality,
+            token_embedding_dimensionality=(args.token_embedding_dimensionality if args.use_learned_embeddings else None),
+            token_type_embedding_dimensionality=(args.token_type_embedding_dimensionality if args.use_learned_embeddings else None),
             embedding_mode=args.mode,
             num_labels=get_n_classes(args.task_name)
         )    
