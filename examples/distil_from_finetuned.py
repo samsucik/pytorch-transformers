@@ -538,6 +538,8 @@ def main():
     parser.add_argument("--token_embedding_dimensionality", type=int, default=None,
                         help="Dimensionality of trained wordpiece/word embeddings to be used. Relevant \
                               if token_embeddings_from_teacher or use_word_vectors set to True).")
+    parser.add_argument("--load_token_embeddings", type=parse_str2bool, default=True, const=True, nargs='?',
+                        help="Set to False to disable loading learned token embeddings (token type embeddings will still be loaded).")
 
     # LSTM-specific arguments
     parser.add_argument("--fc_size", type=int, default=400,
@@ -725,7 +727,7 @@ def main():
     # args.max_steps = 75
 
     ## STUDENT
-    args.use_learned_embeddings = args.token_embeddings_from_teacher or args.use_word_vectors
+    args.use_learned_embeddings = (args.token_embeddings_from_teacher or args.use_word_vectors) and args.load_token_embeddings
     args.n_classes = get_n_classes(args.task_name)
 
     if args.student_type == "LSTM":
@@ -788,25 +790,23 @@ def main():
             elif args.mode == "multichannel":
                 token_embedding_names = ["non_static_embed.weight", "static_embed.weight"]
 
-        if args.use_learned_embeddings:
-            embeddings_to_load = {}
-
-            # retrieve learned token type embeddings to be used with learned wordpiece/word embeddings
-            if args.student_type == "BERT":
-                logger.info("Retrieving learned token type embeddings from the teacher")
-                token_type_embeddings_file = os.path.join(args.teacher_name, "token_type_embeddings_teacher_h{}.pt"\
-                    .format(args.token_type_embedding_dimensionality))
-                if not os.path.isfile(token_type_embeddings_file):
-                    teacher_state_dict = torch.load(os.path.join(args.teacher_name, "pytorch_model.bin"), map_location=torch.device("cpu"))
-                    embedding_weights = teacher_state_dict[teacher_token_type_embedding_name]
-                    assert args.token_type_embedding_dimensionality == embedding_weights.shape[-1]
-                    token_type_embedding_state_dict = {teacher_token_type_embedding_name: embedding_weights}
-                    torch.save(token_type_embedding_state_dict, token_type_embeddings_file)
-                else:
-                    token_type_embedding_state_dict = torch.load(token_type_embeddings_file, map_location=args.device)
-                for name in token_type_embedding_names:
-                    embeddings_to_load[name] = token_type_embedding_state_dict[teacher_token_type_embedding_name]
-
+        embeddings_to_load = {}
+        # retrieve learned token type embeddings to be used with learned wordpiece/word embeddings
+        if args.student_type == "BERT":
+            logger.info("Retrieving learned token type embeddings from the teacher")
+            token_type_embeddings_file = os.path.join(args.teacher_name, "token_type_embeddings_teacher_h{}.pt"\
+                .format(args.token_type_embedding_dimensionality))
+            if not os.path.isfile(token_type_embeddings_file):
+                teacher_state_dict = torch.load(os.path.join(args.teacher_name, "pytorch_model.bin"), map_location=torch.device("cpu"))
+                embedding_weights = teacher_state_dict[teacher_token_type_embedding_name]
+                assert args.token_type_embedding_dimensionality == embedding_weights.shape[-1]
+                token_type_embedding_state_dict = {teacher_token_type_embedding_name: embedding_weights}
+                torch.save(token_type_embedding_state_dict, token_type_embeddings_file)
+            else:
+                token_type_embedding_state_dict = torch.load(token_type_embeddings_file, map_location=args.device)
+            for name in token_type_embedding_names:
+                embeddings_to_load[name] = token_type_embedding_state_dict[teacher_token_type_embedding_name]
+        if args.load_token_embeddings:
             # retrieve learned wordpiece embeddings from teacher model
             if args.token_embeddings_from_teacher:
                 logger.info("Initialising student wordpiece embedding parameters from the teacher")
@@ -835,11 +835,11 @@ def main():
                 for token_embedding_name in token_embedding_names:
                     embeddings_to_load[token_embedding_name] = word_embeddings
 
-            param_keys = student.load_state_dict(embeddings_to_load, strict=False)
-            loaded_params = [p for p in student.state_dict() if p not in param_keys[0]]
-            num_loaded_params = sum([student.state_dict()[p].numel() for p in loaded_params])
-            num_all_params = sum([p.numel() for n, p in student.state_dict().items()])
-            logger.info("Loaded {} parameters (out of total {}) into: {}".format(num_loaded_params, num_all_params, loaded_params))
+        param_keys = student.load_state_dict(embeddings_to_load, strict=False)
+        loaded_params = [p for p in student.state_dict() if p not in param_keys[0]]
+        num_loaded_params = sum([student.state_dict()[p].numel() for p in loaded_params])
+        num_all_params = sum([p.numel() for n, p in student.state_dict().items()])
+        logger.info("Loaded {} parameters (out of total {}) into: {}".format(num_loaded_params, num_all_params, loaded_params))
     student.to(args.device)
     logger.info("Student model created.")
     
