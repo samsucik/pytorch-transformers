@@ -469,7 +469,9 @@ def main():
                         help="The teacher model.")
 
     parser.add_argument("--use_hard_labels", type=parse_str2bool, default=False, const=True, nargs='?',
-                        help="Whether to use hard labels instead of teacher logits in distillation.")    
+                        help="Whether to use hard labels instead of teacher logits in distillation.")
+    parser.add_argument("--use_hard_logits", type=parse_str2bool, default=False, const=True, nargs='?',
+                        help="Whether to use just the teacher-predicted label (logit argmax) instead of entire distribution of logits.")
     parser.add_argument("--temperature", default=2., type=float,
                         help="Temperature for the softmax temperature.")
     parser.add_argument("--alpha_ce", default=1.0, type=float,
