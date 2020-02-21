@@ -244,6 +244,7 @@ class Distiller:
             # loss = self.ce_simple_loss_fct(logits, labels)
             raise Error("Using hard labels is not currently supported, you should set: use_hard_labels=False.")
         elif self.use_hard_logits:
+            teacher_logits = batch[1]
             assert logits.size() == teacher_logits.size()
             preds = torch.argmax(logits, dim=1)
             labels = torch.argmax(teacher_logits, dim=1)
