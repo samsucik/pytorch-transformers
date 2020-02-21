@@ -74,6 +74,7 @@ class Distiller:
         self.temperature = params.temperature
         assert self.temperature > 0.
         self.use_hard_labels = params.use_hard_labels
+        self.use_hard_logits = params.use_hard_logits
 
         self.alpha_ce = params.alpha_ce
         self.alpha_mse = params.alpha_mse
@@ -242,6 +243,13 @@ class Distiller:
         if self.use_hard_labels: # currently broken for BERT as labels are not included in the transfer set
             # loss = self.ce_simple_loss_fct(logits, labels)
             raise Error("Using hard labels is not currently supported, you should set: use_hard_labels=False.")
+        elif self.use_hard_logits:
+            assert logits.size() == teacher_logits.size()
+            preds = torch.argmax(logits, dim=1)
+            labels = torch.argmax(teacher_logits, dim=1)
+            loss_ce = self.alpha_ce * self.ce_simple_loss_fct(logits, labels)
+            loss_mse = self.alpha_mse * self.mse_loss_fct(preds, labels)/logits.size(0) # Reproducing batchmean reduction
+            loss = loss_mse + loss_ce
         else:
             teacher_logits = batch[1]
             assert logits.size() == teacher_logits.size()
