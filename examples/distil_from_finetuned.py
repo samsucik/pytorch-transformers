@@ -727,7 +727,7 @@ def main():
     # args.max_steps = 75
 
     ## STUDENT
-    args.use_learned_embeddings = (args.token_embeddings_from_teacher or args.use_word_vectors) and args.load_token_embeddings
+    args.use_learned_embeddings = args.token_embeddings_from_teacher or args.use_word_vectors
     args.n_classes = get_n_classes(args.task_name)
 
     if args.student_type == "LSTM":
