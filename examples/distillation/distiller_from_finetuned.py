@@ -246,11 +246,12 @@ class Distiller:
         elif self.use_hard_logits:
             teacher_logits = batch[1]
             assert logits.size() == teacher_logits.size()
-            preds = torch.argmax(logits, dim=1)
             labels = torch.argmax(teacher_logits, dim=1)
-            loss_ce = self.alpha_ce * self.ce_simple_loss_fct(logits, labels)
-            loss_mse = self.alpha_mse * self.mse_loss_fct(preds, labels)/logits.size(0) # Reproducing batchmean reduction
-            loss = loss_mse + loss_ce
+            loss = self.ce_simple_loss_fct(logits, labels)
+            #if self.alpha_mse > 0:
+            #    hard_teacher_logits = torch.zeros_like(logits)
+            #    hard_teacher_logits[torch.arange(logits.size(0)), logits.argmax(dim=1)] = 1
+            #    loss = loss + self.alpha_mse * self.mse_loss_fct(logits, hard_teacher_logits)/logits.size(0) # Reproducing batchmean reduction
         else:
             teacher_logits = batch[1]
             assert logits.size() == teacher_logits.size()
